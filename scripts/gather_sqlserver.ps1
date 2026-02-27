@@ -59,7 +59,7 @@ param(
     [string]$Databases = "",
     [string]$Schemas = "",
     [string]$OutputDir = "",
-    [bool]$UseWindowsAuth = $true,
+    [string]$UseWindowsAuth = "true",
     [string]$SqlUser = "",
     [string]$SqlPassword = ""
 )
@@ -150,10 +150,10 @@ function Run-Query {
             "-o", $OutFile
         )
 
-        if ($UseWindowsAuth) {
+        if ($_useWinAuth) {
             $sqlcmdArgs += "-E"
         } else {
-            $sqlcmdArgs += @("-U", $script:sqlUser, "-P", $script:sqlPass)
+            $sqlcmdArgs += @("-U", $script:_credUser, "-P", $script:_credPass)
         }
 
         & sqlcmd @sqlcmdArgs 2>>$LogFile
@@ -219,9 +219,9 @@ function Run-QueryCSV {
                 QueryTimeout   = 600
                 MaxCharLength  = 1000000
             }
-            if (-not $UseWindowsAuth) {
-                $secPass = ConvertTo-SecureString $script:sqlPass -AsPlainText -Force
-                $cred = New-Object System.Management.Automation.PSCredential($script:sqlUser, $secPass)
+            if (-not $_useWinAuth) {
+                $secPass = ConvertTo-SecureString $script:_credPass -AsPlainText -Force
+                $cred = New-Object System.Management.Automation.PSCredential($script:_credUser, $secPass)
                 $connParams["Credential"] = $cred
             }
             $results = Invoke-Sqlcmd @connParams
@@ -237,8 +237,8 @@ function Run-QueryCSV {
                 "-Q", $SQL, "-s", "`t", "-W", "-h", "-1",
                 "-w", "65535", "-o", $OutFile
             )
-            if ($UseWindowsAuth) { $sqlcmdArgs += "-E" }
-            else { $sqlcmdArgs += @("-U", $script:sqlUser, "-P", $script:sqlPass) }
+            if ($_useWinAuth) { $sqlcmdArgs += "-E" }
+            else { $sqlcmdArgs += @("-U", $script:_credUser, "-P", $script:_credPass) }
             & sqlcmd @sqlcmdArgs 2>>$LogFile
         }
 
@@ -268,18 +268,19 @@ Write-Log "Output:   $OutputDir"
 Write-Log "============================================================"
 
 # --- Credentials ---
-$script:sqlUser = ""
-$script:sqlPass = ""
-if (-not $UseWindowsAuth) {
+$script:_credUser = ""
+$script:_credPass = ""
+$_useWinAuth = $UseWindowsAuth -notin @("false","0","$false","no")
+if (-not $_useWinAuth) {
     # Accept pre-passed credentials (from launcher) or prompt interactively
     if ($SqlUser) {
-        $script:sqlUser = $SqlUser
-        $script:sqlPass = $SqlPassword
+        $script:_credUser = $SqlUser
+        $script:_credPass = $SqlPassword
         Write-Log "Auth: SQL Server (credentials pre-passed)"
     } else {
-        $script:sqlUser = Read-Host "Usuario SQL"
+        $script:_credUser = Read-Host "Usuario SQL"
         $secPassInput = Read-Host "Password" -AsSecureString
-        $script:sqlPass = [Runtime.InteropServices.Marshal]::PtrToStringAuto(
+        $script:_credPass = [Runtime.InteropServices.Marshal]::PtrToStringAuto(
             [Runtime.InteropServices.Marshal]::SecureStringToBSTR($secPassInput)
         )
         Write-Log "Auth: SQL Server (interactive)"
@@ -418,8 +419,8 @@ if ($Databases) {
     # Discover all user databases
     $dbFile = Join-Path $OutputDir "_tmp_dbs.txt"
     $sqlcmdArgs = @("-S", $ServerInstance, "-Q", $dbListQuery, "-h", "-1", "-W", "-o", $dbFile)
-    if ($UseWindowsAuth) { $sqlcmdArgs += "-E" }
-    else { $sqlcmdArgs += @("-U", $script:sqlUser, "-P", $script:sqlPass) }
+    if ($_useWinAuth) { $sqlcmdArgs += "-E" }
+    else { $sqlcmdArgs += @("-U", $script:_credUser, "-P", $script:_credPass) }
     & sqlcmd @sqlcmdArgs 2>>$LogFile
 
     $dbList = Get-Content $dbFile -ErrorAction SilentlyContinue |
@@ -483,8 +484,8 @@ ORDER BY s.name;
     } else {
         $schemaFile = Join-Path $OutputDir "_tmp_schemas.txt"
         $sqlcmdArgs = @("-S", $ServerInstance, "-d", $db, "-Q", $schemaQuery, "-h", "-1", "-W", "-o", $schemaFile)
-        if ($UseWindowsAuth) { $sqlcmdArgs += "-E" }
-        else { $sqlcmdArgs += @("-U", $script:sqlUser, "-P", $script:sqlPass) }
+        if ($_useWinAuth) { $sqlcmdArgs += "-E" }
+        else { $sqlcmdArgs += @("-U", $script:_credUser, "-P", $script:_credPass) }
         & sqlcmd @sqlcmdArgs 2>>$LogFile
 
         $schemaList = Get-Content $schemaFile -ErrorAction SilentlyContinue |

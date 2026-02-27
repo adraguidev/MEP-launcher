@@ -41,7 +41,7 @@ param(
     [string]$ServerInstance,
 
     [string]$OutputDir = "",
-    [bool]$UseWindowsAuth = $true,
+    [string]$UseWindowsAuth = "true",
     [string]$SqlUser = "",
     [string]$SqlPassword = "",
     [string]$ScanPaths = "C:\SSIS,D:\SSIS,E:\SSIS,C:\ETL,D:\ETL,C:\SSISPackages,D:\SSISPackages"
@@ -94,8 +94,8 @@ function Run-SqlQuery {
     param([string]$SQL, [string]$Database = "master")
     $sqlcmdArgs = @("-S", $ServerInstance, "-d", $Database,
                     "-Q", $SQL, "-h", "-1", "-W", "-w", "65535", "-b")
-    if ($UseWindowsAuth) { $sqlcmdArgs += "-E" }
-    else { $sqlcmdArgs += @("-U", $script:sqlUser, "-P", $script:sqlPass) }
+    if ($_useWinAuth) { $sqlcmdArgs += "-E" }
+    else { $sqlcmdArgs += @("-U", $script:_credUser, "-P", $script:_credPass) }
     $result = & sqlcmd @sqlcmdArgs 2>>$LogFile
     return $result
 }
@@ -112,17 +112,17 @@ function Run-SqlToFile {
     if ($hasInvoke) {
         $params = @{ ServerInstance = $ServerInstance; Database = $Database;
                      Query = $SQL; QueryTimeout = 600; MaxCharLength = 1000000 }
-        if (-not $UseWindowsAuth) {
-            $secPass = ConvertTo-SecureString $script:sqlPass -AsPlainText -Force
-            $params["Credential"] = New-Object System.Management.Automation.PSCredential($script:sqlUser, $secPass)
+        if (-not $_useWinAuth) {
+            $secPass = ConvertTo-SecureString $script:_credPass -AsPlainText -Force
+            $params["Credential"] = New-Object System.Management.Automation.PSCredential($script:_credUser, $secPass)
         }
         $results = Invoke-Sqlcmd @params
         if ($results) { $results | Export-Csv -Path $OutFile -NoTypeInformation -Encoding UTF8 }
     } else {
         $sqlcmdArgs = @("-S", $ServerInstance, "-d", $Database,
                         "-Q", $SQL, "-s", ",", "-W", "-w", "65535", "-o", $OutFile)
-        if ($UseWindowsAuth) { $sqlcmdArgs += "-E" }
-        else { $sqlcmdArgs += @("-U", $script:sqlUser, "-P", $script:sqlPass) }
+        if ($_useWinAuth) { $sqlcmdArgs += "-E" }
+        else { $sqlcmdArgs += @("-U", $script:_credUser, "-P", $script:_credPass) }
         & sqlcmd @sqlcmdArgs 2>>$LogFile
     }
 }
@@ -383,18 +383,19 @@ Write-Log "Output:   $OutputDir"
 Write-Log "============================================================"
 
 # Credentials
-$script:sqlUser = ""
-$script:sqlPass = ""
-if (-not $UseWindowsAuth) {
+$script:_credUser = ""
+$script:_credPass = ""
+$_useWinAuth = $UseWindowsAuth -notin @("false","0","$false","no")
+if (-not $_useWinAuth) {
     # Accept pre-passed credentials (from launcher) or prompt interactively
     if ($SqlUser) {
-        $script:sqlUser = $SqlUser
-        $script:sqlPass = $SqlPassword
+        $script:_credUser = $SqlUser
+        $script:_credPass = $SqlPassword
         Write-Log "Auth: SQL Server (credentials pre-passed)"
     } else {
-        $script:sqlUser = Read-Host "Usuario SQL"
+        $script:_credUser = Read-Host "Usuario SQL"
         $secP = Read-Host "Password" -AsSecureString
-        $script:sqlPass = [Runtime.InteropServices.Marshal]::PtrToStringAuto(
+        $script:_credPass = [Runtime.InteropServices.Marshal]::PtrToStringAuto(
             [Runtime.InteropServices.Marshal]::SecureStringToBSTR($secP))
         Write-Log "Auth: SQL Server (interactive)"
     }
@@ -534,10 +535,10 @@ ORDER BY f.name, p.name;
         try {
             [System.Reflection.Assembly]::LoadWithPartialName("Microsoft.SqlServer.Management.IntegrationServices") | Out-Null
             $sqlConn = New-Object System.Data.SqlClient.SqlConnection
-            if ($UseWindowsAuth) {
+            if ($_useWinAuth) {
                 $sqlConn.ConnectionString = "Data Source=$ServerInstance;Initial Catalog=master;Integrated Security=SSPI;"
             } else {
-                $sqlConn.ConnectionString = "Data Source=$ServerInstance;Initial Catalog=master;User ID=$($script:sqlUser);Password=$($script:sqlPass);"
+                $sqlConn.ConnectionString = "Data Source=$ServerInstance;Initial Catalog=master;User ID=$($script:_credUser);Password=$($script:_credPass);"
             }
             $sqlConn.Open()
             $ssis = New-Object Microsoft.SqlServer.Management.IntegrationServices.IntegrationServices $sqlConn
@@ -596,10 +597,10 @@ ORDER BY f.name, p.name;
             $tmpIspac = Join-Path $projDir "__tmp_project.ispac"
             try {
                 $conn = New-Object System.Data.SqlClient.SqlConnection
-                if ($UseWindowsAuth) {
+                if ($_useWinAuth) {
                     $conn.ConnectionString = "Data Source=$ServerInstance;Initial Catalog=SSISDB;Integrated Security=SSPI;"
                 } else {
-                    $conn.ConnectionString = "Data Source=$ServerInstance;Initial Catalog=SSISDB;User ID=$($script:sqlUser);Password=$($script:sqlPass);"
+                    $conn.ConnectionString = "Data Source=$ServerInstance;Initial Catalog=SSISDB;User ID=$($script:_credUser);Password=$($script:_credPass);"
                 }
                 $conn.Open()
                 $cmd = $conn.CreateCommand()
@@ -713,7 +714,7 @@ ORDER BY f.foldername, p.name;
             if (-not $safeName) { continue }
             $destFile = Join-Path $msdbDir "$safeName.dtsx"
 
-            & dtutil /SQL "$pkg" /COPY FILE;"$destFile" /SourceServer $ServerInstance /Quiet 2>>$LogFile
+            & dtutil /SQL "$pkg" /COPY "FILE;$destFile" /SourceServer $ServerInstance /Quiet 2>>$LogFile
             if (Test-Path $destFile) {
                 # Sanitize
                 $content = Get-Content $destFile -Raw -Encoding UTF8
