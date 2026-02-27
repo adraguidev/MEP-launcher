@@ -1,0 +1,44 @@
+services:
+  mssql:
+    image: mcr.microsoft.com/azure-sql-edge:latest
+    environment:
+      ACCEPT_EULA: "Y"
+      MSSQL_SA_PASSWORD: "MepTest#2024!"
+    ports:
+      - "1433:1433"
+    healthcheck:
+      test: python3 -c "import socket; s=socket.create_connection(('localhost',1433),2); s.close()"
+      interval: 5s
+      timeout: 5s
+      retries: 30
+
+  init-db:
+    build:
+      context: .
+      dockerfile: Dockerfile.test
+    depends_on:
+      mssql:
+        condition: service_healthy
+    volumes:
+      - ./init.sql:/init.sql:ro
+    entrypoint: bash
+    command: -c "sleep 5 && sqlcmd -S mssql -U sa -P 'MepTest#2024!' -i /init.sql"
+
+  test-runner:
+    build:
+      context: .
+      dockerfile: Dockerfile.test
+    depends_on:
+      init-db:
+        condition: service_completed_successfully
+    volumes:
+      - ../scripts:/mep/scripts:ro
+      - ./run_test.sh:/mep/run_test.sh:ro
+      - mep-output:/mep/output
+    environment:
+      MSSQL_HOST: mssql
+      MSSQL_SA_PASSWORD: "MepTest#2024!"
+    command: /bin/bash /mep/run_test.sh
+
+volumes:
+  mep-output:
