@@ -1,7 +1,7 @@
 <#
 .SYNOPSIS
-    MEP ETL Exporter — SSIS Package & ETL Artifact Extraction
-    Integratel Peru — Stefanini Group
+    MEP ETL Exporter - SSIS Package & ETL Artifact Extraction
+    Integratel Peru - Stefanini Group
 
 .DESCRIPTION
     Detecta y exporta TODOS los artefactos ETL/SSIS de una instancia
@@ -15,7 +15,7 @@
       Fase 5: Post-process → extract embedded SQL, connections, dataflows
       Fase 6: Sanitize → redact passwords/tokens
 
-    Output 100% texto/XML — no binarios.
+    Output 100% texto/XML - no binarios.
 
 .PARAMETER ServerInstance
     Instancia SQL Server
@@ -52,7 +52,7 @@ $timestamp = Get-Date -Format "yyyyMMdd_HHmmss"
 
 # === FIX v4.1: PROVIDER-SAFE PATH RESOLUTION ===
 # When SQLPS module is loaded, PowerShell's current location may be
-# SQLSERVER:\  — a non-filesystem provider where New-Item, Add-Content,
+# SQLSERVER:\  - a non-filesystem provider where New-Item, Add-Content,
 # Export-Csv, Out-File, Get-ChildItem, and Split-Path all fail.
 # We anchor EVERY path to the filesystem using $PSScriptRoot.
 $_scriptDir = $null
@@ -166,7 +166,7 @@ function Extract-DtsxMetadata {
 
     # --- 1. Connection Managers ---
     $connFile = Join-Path $ExtractDir "${baseName}_connections.txt"
-    $connLines = @("# Connection Managers — $baseName", "# Extracted for MEP analysis", "")
+    $connLines = @("# Connection Managers - $baseName", "# Extracted for MEP analysis", "")
 
     $connNodes = $xml.SelectNodes("//DTS:ConnectionManager", $nsMgr)
     if (-not $connNodes -or $connNodes.Count -eq 0) {
@@ -269,7 +269,7 @@ function Extract-DtsxMetadata {
         $sqlLines += "-- (No embedded SQL statements found in this package)"
     }
     ($sqlLines -join "`n") | Out-File -FilePath $sqlFile -Encoding UTF8
-    Write-Log "    Extracted: SQL statements ($sqlCount found)"
+    Write-Log "    Extracted: SQL statements ($($sqlCount) found)"
 
     # --- 3. Script Tasks (C#/VB code) ---
     $scriptCount = 0
@@ -312,12 +312,12 @@ function Extract-DtsxMetadata {
 
     if ($scriptCount -gt 0) {
         ($scriptLines -join "`n") | Out-File -FilePath $scriptFile -Encoding UTF8
-        Write-Log "    Extracted: script tasks ($scriptCount found)"
+        Write-Log "    Extracted: script tasks ($($scriptCount) found)"
     }
 
     # --- 4. Data Flow Summary ---
     $dfFile = Join-Path $ExtractDir "${baseName}_dataflows.txt"
-    $dfLines = @("# Data Flow Summary — $baseName", "")
+    $dfLines = @("# Data Flow Summary - $baseName", "")
     $dfCount = 0
 
     foreach ($node in $allNodes) {
@@ -367,7 +367,7 @@ function Extract-DtsxMetadata {
     if ($dfCount -gt 0) {
         ($dfLines -join "`n") | Out-File -FilePath $dfFile -Encoding UTF8
     }
-    Write-Log "    Extracted: dataflow components ($dfCount found)"
+    Write-Log "    Extracted: dataflow components ($($dfCount) found)"
 }
 
 
@@ -417,7 +417,7 @@ $ssisdbExists = Run-SqlQuery "SET NOCOUNT ON; SELECT COUNT(*) FROM sys.databases
 $ssisdbExists = ($ssisdbExists | Where-Object { $_ -match '^\d+$' } | Select-Object -First 1)
 
 if ($ssisdbExists -and [int]$ssisdbExists -gt 0) {
-    Write-Log "SSISDB encontrada — exportando proyectos..."
+    Write-Log "SSISDB encontrada - exportando proyectos..."
 
     $ssisdbDir = Join-Path $OutputDir "SSISDB"
     New-Item -ItemType Directory -Path $ssisdbDir -Force | Out-Null
@@ -585,7 +585,7 @@ ORDER BY f.name, p.name;
                 # We need to use BCP to extract the project binary and unzip
 
                 # Alternative: use the internal SP to get package data
-                Write-Log "    Package: $pkgName (T-SQL extraction limited — consider SSMS export)"
+                Write-Log "    Package: $pkgName (T-SQL extraction limited - consider SSMS export)"
             }
 
             # Export project binary via BCP as last resort
@@ -658,7 +658,7 @@ ORDER BY f.name, p.name;
     }
 
 } else {
-    Write-Log "SSISDB no existe en esta instancia — saltando Fase 1"
+    Write-Log "SSISDB no existe en esta instancia - saltando Fase 1"
 }
 
 
@@ -672,7 +672,7 @@ $msdbCount = Run-SqlQuery "SET NOCOUNT ON; SELECT COUNT(*) FROM msdb.dbo.sysssis
 $msdbCount = ($msdbCount | Where-Object { $_ -match '^\d+$' } | Select-Object -First 1)
 
 if ($msdbCount -and [int]$msdbCount -gt 0) {
-    Write-Log "Encontrados $msdbCount paquetes en msdb — exportando como XML..."
+    Write-Log "Encontrados $msdbCount paquetes en msdb - exportando como XML..."
 
     $msdbDir = Join-Path $OutputDir "MSDB"
     New-Item -ItemType Directory -Path $msdbDir -Force | Out-Null
@@ -728,7 +728,7 @@ ORDER BY f.foldername, p.name;
             }
         }
     } else {
-        Write-Log "dtutil no disponible — exportando packagedata como XML via T-SQL..." "WARN"
+        Write-Log "dtutil no disponible - exportando packagedata como XML via T-SQL..." "WARN"
 
         # Direct XML extraction from packagedata column
         $pkgXmlQuery = @"
@@ -745,7 +745,7 @@ LEFT JOIN msdb.dbo.sysssispackagefolders f ON p.folderid = f.folderid;
         Write-Log "  Para paquetes completos, instalar dtutil o exportar desde SSMS"
     }
 } else {
-    Write-Log "No hay paquetes legacy en msdb — saltando Fase 2"
+    Write-Log "No hay paquetes legacy en msdb - saltando Fase 2"
 }
 
 
@@ -949,7 +949,7 @@ foreach ($cp in $configPaths) {
 # ============================================================
 Write-Log ""
 Write-Log "============================================================"
-Write-Log "ETL EXPORT COMPLETADO — $(Get-Date)"
+Write-Log "ETL EXPORT COMPLETADO - $(Get-Date)"
 Write-Log "============================================================"
 Write-Log ""
 Write-Log "Paquetes SSIS exportados: $totalPackages"

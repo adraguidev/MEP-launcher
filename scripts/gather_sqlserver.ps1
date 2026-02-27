@@ -1,7 +1,7 @@
 <#
 .SYNOPSIS
-    MEP Gatherer — SQL Server Automated Metadata Extraction
-    Integratel Peru — Stefanini Group
+    MEP Gatherer - SQL Server Automated Metadata Extraction
+    Integratel Peru - Stefanini Group
 
 .DESCRIPTION
     Recolecta TODA la metadata de una instancia SQL Server en una sola
@@ -35,7 +35,7 @@
     Usar autenticación Windows (default). Si es $false, solicita usuario/password SQL.
 
 .EXAMPLE
-    # Todo automático — descubre todas las BDs y schemas
+    # Todo automático - descubre todas las BDs y schemas
     .\gather_sqlserver.ps1 -ServerInstance "WINDBPVLI0017"
 
     # Solo ciertas bases de datos
@@ -72,7 +72,7 @@ $timestamp = Get-Date -Format "yyyyMMdd_HHmmss"
 
 # === FIX v4.1: PROVIDER-SAFE PATH RESOLUTION ===
 # When SQLPS module is loaded, PowerShell's current location may be
-# SQLSERVER:\  — a non-filesystem provider where New-Item, Add-Content,
+# SQLSERVER:\  - a non-filesystem provider where New-Item, Add-Content,
 # Export-Csv, Out-File, Get-ChildItem, and Split-Path all fail.
 # We anchor EVERY path to the filesystem using $PSScriptRoot.
 $_scriptDir = $null
@@ -320,7 +320,7 @@ if (Test-Path $versionFile) {
 }
 
 Write-Log "SQL Server Version: $($script:sqlVersionFull) (major=$($script:sqlMajorVersion))"
-Write-Log "STRING_AGG:    $(if($script:sqlMajorVersion -ge 14){'SI (2017+)'}else{'NO — usando FOR XML PATH'})"
+Write-Log "STRING_AGG:    $(if($script:sqlMajorVersion -ge 14){'SI (2017+)'}else{'NO - usando FOR XML PATH'})"
 Write-Log "Temporal:       $(if($script:sqlMajorVersion -ge 13){'SI (2016+)'}else{'NO'})"
 
 # ============================================================
@@ -727,7 +727,7 @@ ORDER BY OBJECT_NAME(cc.parent_object_id), cc.name;
 "@ (Join-Path $schDir "S06_check_constraints.csv") $db
 
         # ======================================================
-        # S07: STORED PROCEDURES — FULL CODE
+        # S07: STORED PROCEDURES - FULL CODE
         # ======================================================
         Run-QueryCSV "[$db].[$schema] SP Code" @"
 SET NOCOUNT ON;
@@ -745,7 +745,7 @@ ORDER BY o.name;
 "@ (Join-Path $schDir "S07_sp_code.csv") $db
 
         # ======================================================
-        # S08: FUNCTIONS — FULL CODE
+        # S08: FUNCTIONS - FULL CODE
         # ======================================================
         Run-QueryCSV "[$db].[$schema] Function Code" @"
 SET NOCOUNT ON;
@@ -764,7 +764,7 @@ ORDER BY o.name;
 "@ (Join-Path $schDir "S08_function_code.csv") $db
 
         # ======================================================
-        # S09: TRIGGERS — FULL CODE
+        # S09: TRIGGERS - FULL CODE
         # ======================================================
         Run-QueryCSV "[$db].[$schema] Trigger Code" @"
 SET NOCOUNT ON;
@@ -783,7 +783,7 @@ ORDER BY OBJECT_NAME(t.parent_id), t.name;
 "@ (Join-Path $schDir "S09_trigger_code.csv") $db
 
         # ======================================================
-        # S10: VIEWS — FULL CODE
+        # S10: VIEWS - FULL CODE
         # ======================================================
         Run-QueryCSV "[$db].[$schema] View Code" @"
 SET NOCOUNT ON;
@@ -891,7 +891,7 @@ ORDER BY t.name;
 # ============================================================
 Write-Log ""
 Write-Log "============================================================"
-Write-Log "RECOLECCIÓN COMPLETADA — $(Get-Date)"
+Write-Log "RECOLECCIÓN COMPLETADA - $(Get-Date)"
 Write-Log "============================================================"
 Write-Log ""
 Write-Log "SQL Server:  $($script:sqlVersionFull)"
