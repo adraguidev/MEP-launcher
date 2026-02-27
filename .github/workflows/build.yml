@@ -27,8 +27,11 @@ jobs:
         with:
           python-version: '3.11'
 
-      - name: Install PyInstaller
-        run: pip install pyinstaller
+      - name: Install dependencies
+        run: pip install pyinstaller pytest
+
+      - name: Run tests
+        run: python -m pytest tests/ -v
 
       - name: Build EXE
         run: pyinstaller mep_launcher.spec
