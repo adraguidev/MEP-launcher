@@ -1,19 +1,19 @@
-<#
+﻿<#
 .SYNOPSIS
     MEP ETL Exporter - SSIS Package & ETL Artifact Extraction
     Integratel Peru - Stefanini Group
 
 .DESCRIPTION
     Detecta y exporta TODOS los artefactos ETL/SSIS de una instancia
-    SQL Server como texto legible (XML/SQL/TXT) para análisis por LLM.
+    SQL Server como texto legible (XML/SQL/TXT) para analisis por LLM.
 
-    Flujo automático (sin preguntas):
-      Fase 1: SSISDB catalog → .dtsx XML + project params
-      Fase 2: msdb legacy packages → .dtsx XML
-      Fase 3: SQL Agent jobs → .dtsx paths referenced + job step SQL
-      Fase 4: File system scan → .dtsx + .dtsConfig found on disk
-      Fase 5: Post-process → extract embedded SQL, connections, dataflows
-      Fase 6: Sanitize → redact passwords/tokens
+    Flujo automatico (sin preguntas):
+      Fase 1: SSISDB catalog -> .dtsx XML + project params
+      Fase 2: msdb legacy packages -> .dtsx XML
+      Fase 3: SQL Agent jobs -> .dtsx paths referenced + job step SQL
+      Fase 4: File system scan -> .dtsx + .dtsConfig found on disk
+      Fase 5: Post-process -> extract embedded SQL, connections, dataflows
+      Fase 6: Sanitize -> redact passwords/tokens
 
     Output 100% texto/XML - no binarios.
 
@@ -24,7 +24,7 @@
     Directorio de salida. Default: .\mep_etl_YYYYMMDD_HHMMSS
 
 .PARAMETER UseWindowsAuth
-    Usar autenticación Windows (default)
+    Usar autenticacion Windows (default)
 
 .PARAMETER ScanPaths
     Rutas adicionales donde buscar .dtsx en disco (separadas por coma).
@@ -550,11 +550,11 @@ ORDER BY f.name, p.name;
             $ispacPath = Join-Path $projDir "$projectName.ispac"
             [System.IO.File]::WriteAllBytes($ispacPath, $bytes)
 
-            # Unzip .ispac → .dtsx files
+            # Unzip .ispac -> .dtsx files
             try {
                 Add-Type -AssemblyName System.IO.Compression.FileSystem
                 [System.IO.Compression.ZipFile]::ExtractToDirectory($ispacPath, $projDir)
-                Write-Log "    Unzipped .ispac → .dtsx files"
+                Write-Log "    Unzipped .ispac -> .dtsx files"
             } catch {
                 # Fallback for older PS
                 $shell = New-Object -ComObject Shell.Application
@@ -629,7 +629,7 @@ ORDER BY f.name, p.name;
                 $conn.Close()
             } catch {
                 Write-Log "    T-SQL fallback also failed: $_" "WARN"
-                Write-Log "    → Export manually via SSMS: SSISDB > $folderName > $projectName > right-click" "WARN"
+                Write-Log "    -> Export manually via SSMS: SSISDB > $folderName > $projectName > right-click" "WARN"
             }
         }
 
@@ -741,7 +741,7 @@ FROM msdb.dbo.sysssispackages p
 LEFT JOIN msdb.dbo.sysssispackagefolders f ON p.folderid = f.folderid;
 "@
         # This approach has size limits; log warning
-        Write-Log "  Nota: La exportación T-SQL puede truncar paquetes grandes" "WARN"
+        Write-Log "  Nota: La exportacion T-SQL puede truncar paquetes grandes" "WARN"
         Write-Log "  Para paquetes completos, instalar dtutil o exportar desde SSMS"
     }
 } else {
@@ -913,7 +913,7 @@ if ($foundFiles.Count -gt 0) {
         $content = Get-Content $file.FullName -Raw -Encoding UTF8 -ErrorAction SilentlyContinue
         if ($content) {
             (Sanitize-Content $content) | Out-File -FilePath $destPath -Encoding UTF8
-            Write-Log "  Copied: $($file.FullName) → $relPath"
+            Write-Log "  Copied: $($file.FullName) -> $relPath"
 
             if ($file.Extension -eq ".dtsx") {
                 $totalPackages++
@@ -961,7 +961,7 @@ $extractedConn = (Get-ChildItem -Path $OutputDir -Filter "*_connections.txt" -Re
 $extractedDF = (Get-ChildItem -Path $OutputDir -Filter "*_dataflows.txt" -Recurse -ErrorAction SilentlyContinue).Count
 $extractedScript = (Get-ChildItem -Path $OutputDir -Filter "*_script_tasks.txt" -Recurse -ErrorAction SilentlyContinue).Count
 
-Write-Log "Artefactos extraídos para análisis LLM:"
+Write-Log "Artefactos extraidos para analisis LLM:"
 Write-Log "  SQL embebido:        $extractedSql archivos"
 Write-Log "  Connection managers:  $extractedConn archivos"
 Write-Log "  Data flow summaries:  $extractedDF archivos"
@@ -971,7 +971,7 @@ Write-Log ""
 $allFiles = Get-ChildItem -Path $OutputDir -Recurse -File
 $totalSize = [math]::Round(($allFiles | Measure-Object -Property Length -Sum).Sum / 1MB, 2)
 Write-Log "Total archivos: $($allFiles.Count)"
-Write-Log "Tamaño total:   $totalSize MB (100% texto/XML)"
+Write-Log "Tamano total:   $totalSize MB (100% texto/XML)"
 Write-Log ""
 Write-Log "SIGUIENTE PASO:"
 Write-Log "  Comprimir: Compress-Archive -Path '$OutputDir\*' -DestinationPath 'etl_evidence.zip'"

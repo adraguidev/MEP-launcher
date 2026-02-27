@@ -1,21 +1,21 @@
-<#
+﻿<#
 .SYNOPSIS
     MEP Gatherer - SQL Server Automated Metadata Extraction
     Integratel Peru - Stefanini Group
 
 .DESCRIPTION
     Recolecta TODA la metadata de una instancia SQL Server en una sola
-    ejecución. Detecta la versión de SQL Server y adapta las queries
-    automáticamente (compatible SQL Server 2008 R2 a 2022).
+    ejecucion. Detecta la version de SQL Server y adapta las queries
+    automaticamente (compatible SQL Server 2008 R2 a 2022).
 
     Organiza output por Base de Datos > Schema:
       output/
-      ├── _instance/           (info a nivel de instancia)
-      ├── DB_Name/
-      │   ├── _database/       (info a nivel de BD)
-      │   ├── SchemaName/      (data dictionary, SPs, triggers, views...)
-      │   └── ...
-      └── ...
+      |-- _instance/           (info a nivel de instancia)
+      |-- DB_Name/
+      |   |-- _database/       (info a nivel de BD)
+      |   |-- SchemaName/      (data dictionary, SPs, triggers, views...)
+      |   \-- ...
+      \-- ...
 
 .PARAMETER ServerInstance
     Instancia SQL Server (ej: "WINDBPVLI0017", "WINDBPVLI0017\INST1", "10.0.1.5,1433")
@@ -32,10 +32,10 @@
     Directorio de salida. Default: .\mep_sqlserver_YYYYMMDD_HHMMSS
 
 .PARAMETER UseWindowsAuth
-    Usar autenticación Windows (default). Si es $false, solicita usuario/password SQL.
+    Usar autenticacion Windows (default). Si es $false, solicita usuario/password SQL.
 
 .EXAMPLE
-    # Todo automático - descubre todas las BDs y schemas
+    # Todo automatico - descubre todas las BDs y schemas
     .\gather_sqlserver.ps1 -ServerInstance "WINDBPVLI0017"
 
     # Solo ciertas bases de datos
@@ -44,10 +44,10 @@
     # Solo ciertos schemas dentro de todas las BDs
     .\gather_sqlserver.ps1 -ServerInstance "WINDBPVLI0017" -Schemas "dbo,etl,staging,dim,fact"
 
-    # Combinado: BDs y schemas específicos
+    # Combinado: BDs y schemas especificos
     .\gather_sqlserver.ps1 -ServerInstance "WINDBPVLI0017" -Databases "DWH_Red" -Schemas "dbo,fact,dim,stg"
 
-    # Con autenticación SQL
+    # Con autenticacion SQL
     .\gather_sqlserver.ps1 -ServerInstance "10.0.1.5,1433" -UseWindowsAuth $false
 #>
 
@@ -65,7 +65,7 @@ param(
 )
 
 # ============================================================
-# CONFIGURACIÓN
+# CONFIGURACION
 # ============================================================
 $ErrorActionPreference = "Continue"
 $timestamp = Get-Date -Format "yyyyMMdd_HHmmss"
@@ -180,7 +180,7 @@ function Run-QueryCSV {
     <#
     .SYNOPSIS
         Ejecuta query y genera CSV limpio usando BCP o PowerShell.
-        Más robusto que sqlcmd para datos con comas/newlines.
+        Mas robusto que sqlcmd para datos con comas/newlines.
     #>
     param(
         [string]$Label,
@@ -290,10 +290,10 @@ if (-not $_useWinAuth) {
 }
 
 # ============================================================
-# FASE 0: DETECCIÓN DE VERSIÓN
+# FASE 0: DETECCION DE VERSION
 # ============================================================
 Write-Log ""
-Write-Log "=== FASE 0: Detección de versión ==="
+Write-Log "=== FASE 0: Deteccion de version ==="
 
 $versionQuery = "SET NOCOUNT ON; SELECT SERVERPROPERTY('ProductVersion') AS ver, SERVERPROPERTY('ProductLevel') AS sp, SERVERPROPERTY('Edition') AS ed, SERVERPROPERTY('ProductMajorVersion') AS major, @@VERSION AS full_ver"
 
@@ -327,7 +327,7 @@ Write-Log "Temporal:       $(if($script:sqlMajorVersion -ge 13){'SI (2016+)'}els
 # FASE 1: INFO A NIVEL DE INSTANCIA
 # ============================================================
 Write-Log ""
-Write-Log "=== FASE 1: Información de instancia ==="
+Write-Log "=== FASE 1: Informacion de instancia ==="
 $instDir = Join-Path $OutputDir "_instance"
 
 # Instance config
@@ -460,9 +460,9 @@ foreach ($db in $dbList) {
     New-Item -ItemType Directory -Path $dbMetaDir -Force | Out-Null
 
     Write-Log ""
-    Write-Log "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    Write-Log "=========================================="
     Write-Log "  BD $dbCount/$($dbList.Count): $db"
-    Write-Log "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    Write-Log "=========================================="
 
     # ----------------------------------------------------------
     # 3a: Discover schemas in this database
@@ -891,7 +891,7 @@ ORDER BY t.name;
 # ============================================================
 Write-Log ""
 Write-Log "============================================================"
-Write-Log "RECOLECCIÓN COMPLETADA - $(Get-Date)"
+Write-Log "RECOLECCION COMPLETADA - $(Get-Date)"
 Write-Log "============================================================"
 Write-Log ""
 Write-Log "SQL Server:  $($script:sqlVersionFull)"
@@ -905,7 +905,7 @@ $totalSize = ($allFiles | Measure-Object -Property Length -Sum).Sum
 $totalFiles = $allFiles.Count
 
 Write-Log "  Total archivos: $totalFiles"
-Write-Log "  Tamaño total:   $([math]::Round($totalSize / 1MB, 2)) MB"
+Write-Log "  Tamano total:   $([math]::Round($totalSize / 1MB, 2)) MB"
 Write-Log ""
 Write-Log "Estructura:"
 Get-ChildItem -Path $OutputDir -Directory | ForEach-Object {
