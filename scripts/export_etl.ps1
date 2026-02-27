@@ -693,8 +693,21 @@ ORDER BY f.foldername, p.name;
 "@ (Join-Path $msdbDir "inventory.csv")
 
     # Export each package as XML using dtutil (if available)
+    # Prefer newest dtutil version (150, 160, 140, 130) to avoid Express edition limitations
     $hasDtutil = $false
-    try { Get-Command dtutil -ErrorAction Stop | Out-Null; $hasDtutil = $true } catch {}
+    $dtutilPath = $null
+    foreach ($ver in @(160, 150, 140, 130)) {
+        $candidate = Join-Path $env:ProgramFiles "Microsoft SQL Server\$ver\DTS\Binn\dtutil.exe"
+        if (Test-Path $candidate) {
+            $dtutilPath = $candidate
+            $hasDtutil = $true
+            Write-Log "  Usando dtutil v$ver : $candidate"
+            break
+        }
+    }
+    if (-not $hasDtutil) {
+        try { $dtutilPath = (Get-Command dtutil -ErrorAction Stop).Source; $hasDtutil = $true } catch {}
+    }
 
     if ($hasDtutil) {
         $pkgList = Run-SqlQuery @"
@@ -714,7 +727,7 @@ ORDER BY f.foldername, p.name;
             if (-not $safeName) { continue }
             $destFile = Join-Path $msdbDir "$safeName.dtsx"
 
-            & dtutil /SQL "$pkg" /COPY "FILE;$destFile" /SourceServer $ServerInstance /Quiet 2>>$LogFile
+            & $dtutilPath /SQL "$pkg" /COPY "FILE;$destFile" /SourceServer $ServerInstance /Quiet 2>>$LogFile
             if (Test-Path $destFile) {
                 # Sanitize
                 $content = Get-Content $destFile -Raw -Encoding UTF8
