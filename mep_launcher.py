@@ -63,6 +63,43 @@ def clear_screen():
     os.system("cls" if os.name == "nt" else "clear")
 
 
+def detect_sql_instances() -> list:
+    """Detect locally installed SQL Server instances via the Windows registry.
+
+    Returns a list of instance connection strings (e.g. ['MYSERVER', 'MYSERVER\\DEV']).
+    Falls back to an empty list on any failure (non-Windows, no registry access, etc.).
+    """
+    if os.name != "nt":
+        return []
+    try:
+        import winreg
+        hostname = os.environ.get("COMPUTERNAME", "")
+        if not hostname:
+            return []
+        instances = []
+        # HKLM\SOFTWARE\Microsoft\Microsoft SQL Server\Instance Names\SQL
+        # Each value name is an instance name, e.g. "MSSQLSERVER" (default) or "DEVTEST"
+        key = winreg.OpenKey(
+            winreg.HKEY_LOCAL_MACHINE,
+            r"SOFTWARE\Microsoft\Microsoft SQL Server\Instance Names\SQL",
+        )
+        i = 0
+        while True:
+            try:
+                name, _, _ = winreg.EnumValue(key, i)
+                if name.upper() == "MSSQLSERVER":
+                    instances.append(hostname)
+                else:
+                    instances.append(f"{hostname}\\{name}")
+                i += 1
+            except OSError:
+                break
+        winreg.CloseKey(key)
+        return instances
+    except Exception:
+        return []
+
+
 def print_header(server_instance: str):
     clear_screen()
     print("=" * 62)
@@ -200,7 +237,26 @@ def main():
         print("  [OK] Ejecutando como Administrador")
         print()
 
-    server_instance = input("  Instancia SQL Server (ej: MISERVIDOR, MISERVIDOR\\INST1, 10.0.1.5,1433): ").strip()
+    # Auto-detect installed SQL Server instances
+    detected = detect_sql_instances()
+    if detected:
+        print("  Instancias SQL Server detectadas:")
+        for idx, inst in enumerate(detected, 1):
+            print(f"    {idx}) {inst}")
+        print(f"    O) Otra (ingresar manualmente)")
+        print()
+        while True:
+            choice = input(f"  Seleccione (1-{len(detected)}) o O para otra: ").strip().upper()
+            if choice == "O":
+                server_instance = input("  Instancia SQL Server: ").strip()
+                break
+            if choice.isdigit() and 1 <= int(choice) <= len(detected):
+                server_instance = detected[int(choice) - 1]
+                break
+            print("  Opcion invalida.")
+    else:
+        server_instance = input("  Instancia SQL Server (ej: MISERVIDOR, MISERVIDOR\\INST1, 10.0.1.5,1433): ").strip()
+
     if not server_instance:
         print("\n  [ERROR] Debe ingresar una instancia de SQL Server.")
         input("\nPresione ENTER para salir...")
