@@ -482,8 +482,8 @@ ORDER BY f.name, p.name, pk.name;
     Run-SqlToFile @"
 SET NOCOUNT ON;
 SELECT TOP 200
-    f.name AS folder_name,
-    p.name AS project_name,
+    e.folder_name,
+    e.project_name,
     e.package_name,
     e.status,
     CASE e.status
@@ -496,8 +496,6 @@ SELECT TOP 200
     DATEDIFF(SECOND, e.start_time, e.end_time) AS duration_seconds,
     e.executed_as_name
 FROM SSISDB.catalog.executions e
-JOIN SSISDB.catalog.projects p ON e.project_id = p.project_id
-JOIN SSISDB.catalog.folders f ON e.folder_id = f.folder_id
 ORDER BY e.start_time DESC;
 "@ (Join-Path $ssisdbDir "execution_history.csv") "SSISDB"
 
