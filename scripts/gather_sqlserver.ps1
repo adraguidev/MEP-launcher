@@ -220,9 +220,16 @@ function Run-QueryCSV {
                 MaxCharLength  = 1000000
             }
             if (-not $_useWinAuth) {
-                $secPass = ConvertTo-SecureString $script:_credPass -AsPlainText -Force
-                $cred = New-Object System.Management.Automation.PSCredential($script:_credUser, $secPass)
-                $connParams["Credential"] = $cred
+                $cmdInfo = Get-Command Invoke-Sqlcmd
+                if ($cmdInfo.Parameters.ContainsKey('Credential')) {
+                    $secPass = ConvertTo-SecureString $script:_credPass -AsPlainText -Force
+                    $cred = New-Object System.Management.Automation.PSCredential($script:_credUser, $secPass)
+                    $connParams["Credential"] = $cred
+                } else {
+                    # SQLPS module uses -Username/-Password instead of -Credential
+                    $connParams["Username"] = $script:_credUser
+                    $connParams["Password"] = $script:_credPass
+                }
             }
             $results = Invoke-Sqlcmd @connParams
             if ($results) {

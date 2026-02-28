@@ -174,6 +174,12 @@ Compress-Archive -Path ".\mep_*" -DestinationPath "evidencia_MISERVIDOR.zip"
 
 ## Changelog
 
+### v2.6 (2026-02-28)
+- Fix: Compatibilidad SQL Auth con modulo SQLPS (antiguo) - detecta si `Invoke-Sqlcmd` soporta `-Credential` (SqlServer module) o `-Username`/`-Password` (SQLPS module) y usa el parametro correcto automaticamente.
+
+### v2.5 (2026-02-28)
+- Fix: Query de historial de ejecuciones SSISDB - `catalog.executions` ya tiene `folder_name` y `project_name` directamente; eliminados JOINs incorrectos contra columnas inexistentes (`project_id`, `folder_id`).
+
 ### v2.4 (2026-02-27)
 - Deteccion automatica de instancias SQL Server instaladas via registro de Windows.
 - El usuario elige de una lista en vez de escribir el nombre manualmente.
