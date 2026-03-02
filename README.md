@@ -300,6 +300,12 @@ Compress-Archive -Path ".\mep_*" -DestinationPath "evidencia_MISERVIDOR.zip"
 
 ## Changelog
 
+### v2.9 (2026-03-02)
+- Fix: Validacion al inicio de que `sqlcmd` o `Invoke-Sqlcmd` existan en el servidor. Si no hay ninguno, muestra instrucciones de instalacion y aborta (Riesgo #1).
+- Fix: Passwords con caracteres especiales (`$`, `` ` ``, `"`, `!`) ya no fallan. Se usa `$env:SQLCMDPASSWORD` (variable oficial Microsoft) en vez de pasar el password via `-P` en la linea de comandos (Riesgo #2).
+- Mejora: Fallback automatico a `Invoke-Sqlcmd` cuando `sqlcmd` no esta disponible en ambos scripts.
+- Seguridad: El password ya no aparece en la linea de comandos del proceso. Variable de entorno se limpia al finalizar.
+
 ### v2.8 (2026-03-02)
 - Fix: SQL auth ahora se pasa correctamente a los scripts (antes se ignoraba silenciosamente).
 - Mejora: SSISDB .ispac export con SQL auth muestra mensaje claro en vez de error; exporta inventario de paquetes como fallback.
