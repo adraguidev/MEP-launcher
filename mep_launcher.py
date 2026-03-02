@@ -134,7 +134,7 @@ def ask_auth() -> dict:
     print()
     print("  [OK] Se usara autenticacion SQL Server")
     return {
-        "UseWindowsAuth": "$false",
+        "UseWindowsAuth": "false",
         "SqlUser": sql_user,
         "SqlPassword": sql_pass,
     }

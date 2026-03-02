@@ -77,7 +77,7 @@ class TestAskAuth:
         with mock.patch("builtins.input", side_effect=inputs):
             result = mep_launcher.ask_auth()
         assert result == {
-            "UseWindowsAuth": "$false",
+            "UseWindowsAuth": "false",
             "SqlUser": "mi_usuario",
             "SqlPassword": "mi_password",
         }
@@ -159,13 +159,13 @@ class TestRunPs1:
         with mock.patch("subprocess.run") as mock_run:
             mock_run.return_value = mock.Mock(returncode=0)
             mep_launcher.run_ps1("/tmp/test.ps1", "SRV", {
-                "UseWindowsAuth": "$false",
+                "UseWindowsAuth": "false",
                 "SqlUser": "admin",
             })
 
         args = mock_run.call_args[0][0]
         assert "-UseWindowsAuth" in args
-        assert "$false" in args
+        assert "false" in args
         assert "-SqlUser" in args
         assert "admin" in args
 
