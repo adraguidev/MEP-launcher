@@ -174,6 +174,11 @@ Compress-Archive -Path ".\mep_*" -DestinationPath "evidencia_MISERVIDOR.zip"
 
 ## Changelog
 
+### v2.8 (2026-03-02)
+- Fix: SQL auth ahora se pasa correctamente a los scripts (antes se ignoraba silenciosamente).
+- Mejora: SSISDB .ispac export con SQL auth muestra mensaje claro en vez de error; exporta inventario de paquetes como fallback.
+- Compatibilidad: `Invoke-Sqlcmd` detecta automaticamente si usar `-Credential` o `-Username`/`-Password` segun el modulo instalado.
+
 ### v2.6 (2026-02-28)
 - Fix: Compatibilidad SQL Auth con modulo SQLPS (antiguo) - detecta si `Invoke-Sqlcmd` soporta `-Credential` (SqlServer module) o `-Username`/`-Password` (SQLPS module) y usa el parametro correcto automaticamente.
 
