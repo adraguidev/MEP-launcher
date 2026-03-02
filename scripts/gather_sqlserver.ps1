@@ -113,8 +113,8 @@ function Write-Log {
 function Run-Query {
     <#
     .SYNOPSIS
-        Ejecuta query SQL y guarda resultado como CSV.
-        Usa sqlcmd (disponible en todas las versiones) con output CSV.
+        Ejecuta query SQL y guarda resultado como texto.
+        Usa sqlcmd si disponible, fallback a Invoke-Sqlcmd.
     #>
     param(
         [string]$Label,
@@ -138,28 +138,46 @@ function Run-Query {
             New-Item -ItemType Directory -Path $outDir -Force | Out-Null
         }
 
-        # Build sqlcmd arguments
-        $sqlcmdArgs = @(
-            "-S", $ServerInstance,
-            "-d", $Database,
-            "-Q", $SQL,
-            "-s", ",",          # column separator
-            "-W",               # trim trailing spaces
-            "-h", "-1",         # no headers (we add them via query)
-            "-w", "65535",      # max line width
-            "-o", $OutFile
-        )
+        if ($script:_hasSqlcmd) {
+            $sqlcmdArgs = @(
+                "-S", $ServerInstance,
+                "-d", $Database,
+                "-Q", $SQL,
+                "-s", ",",
+                "-W",
+                "-h", "-1",
+                "-w", "65535",
+                "-o", $OutFile
+            )
+            if ($_useWinAuth) { $sqlcmdArgs += "-E" }
+            else { $sqlcmdArgs += @("-U", $script:_credUser, "-P", $script:_credPass) }
 
-        if ($_useWinAuth) {
-            $sqlcmdArgs += "-E"
+            & sqlcmd @sqlcmdArgs 2>>$LogFile
+
+            if ($LASTEXITCODE -ne 0) {
+                Write-Log "  [$Label] sqlcmd returned exit code $LASTEXITCODE" "WARN"
+            }
         } else {
-            $sqlcmdArgs += @("-U", $script:_credUser, "-P", $script:_credPass)
-        }
-
-        & sqlcmd @sqlcmdArgs 2>>$LogFile
-
-        if ($LASTEXITCODE -ne 0) {
-            Write-Log "  [$Label] sqlcmd returned exit code $LASTEXITCODE" "WARN"
+            # Fallback: Invoke-Sqlcmd
+            $connParams = @{
+                ServerInstance = $ServerInstance; Database = $Database;
+                Query = $SQL; QueryTimeout = 600; MaxCharLength = 1000000
+            }
+            if (-not $_useWinAuth) {
+                $cmdInfo = Get-Command Invoke-Sqlcmd
+                if ($cmdInfo.Parameters.ContainsKey('Credential')) {
+                    $secPass = ConvertTo-SecureString $script:_credPass -AsPlainText -Force
+                    $cred = New-Object System.Management.Automation.PSCredential($script:_credUser, $secPass)
+                    $connParams["Credential"] = $cred
+                } else {
+                    $connParams["Username"] = $script:_credUser
+                    $connParams["Password"] = $script:_credPass
+                }
+            }
+            $results = Invoke-Sqlcmd @connParams
+            if ($results) {
+                ($results | Format-Table -HideTableHeaders -AutoSize | Out-String).Trim() | Out-File $OutFile -Encoding UTF8
+            }
         }
 
         $elapsed = ((Get-Date) - $startTime).TotalSeconds
@@ -296,6 +314,34 @@ if (-not $_useWinAuth) {
     Write-Log "Auth: Windows (integrated)"
 }
 
+# --- Validate SQL tools availability ---
+$script:_hasSqlcmd = $false
+$script:_hasInvokeSqlcmd = $false
+try { Get-Command sqlcmd -ErrorAction Stop | Out-Null; $script:_hasSqlcmd = $true } catch {}
+try { Get-Command Invoke-Sqlcmd -ErrorAction Stop | Out-Null; $script:_hasInvokeSqlcmd = $true } catch {}
+
+if (-not $script:_hasSqlcmd -and -not $script:_hasInvokeSqlcmd) {
+    Write-Log "============================================================" "ERROR"
+    Write-Log "ERROR CRITICO: No se encontro 'sqlcmd' ni 'Invoke-Sqlcmd'" "ERROR"
+    Write-Log "" "ERROR"
+    Write-Log "Instale alguno de los siguientes:" "ERROR"
+    Write-Log "  1) sqlcmd: https://learn.microsoft.com/sql/tools/sqlcmd/sqlcmd-utility" "ERROR"
+    Write-Log "     O instalar 'SQL Server Command Line Utilities' desde el instalador de SQL Server" "ERROR"
+    Write-Log "  2) Modulo SqlServer de PowerShell:" "ERROR"
+    Write-Log "     Install-Module -Name SqlServer -Scope CurrentUser" "ERROR"
+    Write-Log "  3) Importar SQLPS (si SQL Server esta instalado):" "ERROR"
+    Write-Log "     Import-Module SQLPS" "ERROR"
+    Write-Log "============================================================" "ERROR"
+    Write-Host ""
+    Write-Host "  [ERROR] No se encontro sqlcmd ni Invoke-Sqlcmd."
+    Write-Host "  Sin estas herramientas no es posible conectarse a SQL Server."
+    Write-Host "  Consulte el log para opciones de instalacion: $LogFile"
+    Pop-Location
+    exit 1
+}
+
+Write-Log "SQL Tools: sqlcmd=$(if($script:_hasSqlcmd){'SI'}else{'NO'}), Invoke-Sqlcmd=$(if($script:_hasInvokeSqlcmd){'SI'}else{'NO'})"
+
 # ============================================================
 # FASE 0: DETECCION DE VERSION
 # ============================================================
@@ -424,16 +470,33 @@ if ($Databases) {
     Write-Log "BDs especificadas: $($dbList -join ', ')"
 } else {
     # Discover all user databases
-    $dbFile = Join-Path $OutputDir "_tmp_dbs.txt"
-    $sqlcmdArgs = @("-S", $ServerInstance, "-Q", $dbListQuery, "-h", "-1", "-W", "-o", $dbFile)
-    if ($_useWinAuth) { $sqlcmdArgs += "-E" }
-    else { $sqlcmdArgs += @("-U", $script:_credUser, "-P", $script:_credPass) }
-    & sqlcmd @sqlcmdArgs 2>>$LogFile
+    if ($script:_hasSqlcmd) {
+        $dbFile = Join-Path $OutputDir "_tmp_dbs.txt"
+        $sqlcmdArgs = @("-S", $ServerInstance, "-Q", $dbListQuery, "-h", "-1", "-W", "-o", $dbFile)
+        if ($_useWinAuth) { $sqlcmdArgs += "-E" }
+        else { $sqlcmdArgs += @("-U", $script:_credUser, "-P", $script:_credPass) }
+        & sqlcmd @sqlcmdArgs 2>>$LogFile
 
-    $dbList = Get-Content $dbFile -ErrorAction SilentlyContinue |
-        Where-Object { $_.Trim() -ne "" -and $_ -notmatch "^\(" -and $_ -notmatch "rows affected" } |
-        ForEach-Object { $_.Trim() }
-    Remove-Item $dbFile -ErrorAction SilentlyContinue
+        $dbList = Get-Content $dbFile -ErrorAction SilentlyContinue |
+            Where-Object { $_.Trim() -ne "" -and $_ -notmatch "^\(" -and $_ -notmatch "rows affected" } |
+            ForEach-Object { $_.Trim() }
+        Remove-Item $dbFile -ErrorAction SilentlyContinue
+    } else {
+        # Fallback: Invoke-Sqlcmd
+        $connParams = @{ ServerInstance = $ServerInstance; Query = $dbListQuery; QueryTimeout = 120 }
+        if (-not $_useWinAuth) {
+            $cmdInfo = Get-Command Invoke-Sqlcmd
+            if ($cmdInfo.Parameters.ContainsKey('Credential')) {
+                $secPass = ConvertTo-SecureString $script:_credPass -AsPlainText -Force
+                $connParams["Credential"] = New-Object System.Management.Automation.PSCredential($script:_credUser, $secPass)
+            } else {
+                $connParams["Username"] = $script:_credUser
+                $connParams["Password"] = $script:_credPass
+            }
+        }
+        $dbResults = Invoke-Sqlcmd @connParams
+        $dbList = @($dbResults | ForEach-Object { $_.name })
+    }
 
     Write-Log "BDs descubiertas: $($dbList -join ', ')"
 }
@@ -489,16 +552,33 @@ ORDER BY s.name;
         $schemaList = $Schemas -split "," | ForEach-Object { $_.Trim() }
         Write-Log "  Schemas especificados: $($schemaList -join ', ')"
     } else {
-        $schemaFile = Join-Path $OutputDir "_tmp_schemas.txt"
-        $sqlcmdArgs = @("-S", $ServerInstance, "-d", $db, "-Q", $schemaQuery, "-h", "-1", "-W", "-o", $schemaFile)
-        if ($_useWinAuth) { $sqlcmdArgs += "-E" }
-        else { $sqlcmdArgs += @("-U", $script:_credUser, "-P", $script:_credPass) }
-        & sqlcmd @sqlcmdArgs 2>>$LogFile
+        if ($script:_hasSqlcmd) {
+            $schemaFile = Join-Path $OutputDir "_tmp_schemas.txt"
+            $sqlcmdArgs = @("-S", $ServerInstance, "-d", $db, "-Q", $schemaQuery, "-h", "-1", "-W", "-o", $schemaFile)
+            if ($_useWinAuth) { $sqlcmdArgs += "-E" }
+            else { $sqlcmdArgs += @("-U", $script:_credUser, "-P", $script:_credPass) }
+            & sqlcmd @sqlcmdArgs 2>>$LogFile
 
-        $schemaList = Get-Content $schemaFile -ErrorAction SilentlyContinue |
-            Where-Object { $_.Trim() -ne "" -and $_ -notmatch "^\(" -and $_ -notmatch "rows affected" } |
-            ForEach-Object { $_.Trim() }
-        Remove-Item $schemaFile -ErrorAction SilentlyContinue
+            $schemaList = Get-Content $schemaFile -ErrorAction SilentlyContinue |
+                Where-Object { $_.Trim() -ne "" -and $_ -notmatch "^\(" -and $_ -notmatch "rows affected" } |
+                ForEach-Object { $_.Trim() }
+            Remove-Item $schemaFile -ErrorAction SilentlyContinue
+        } else {
+            # Fallback: Invoke-Sqlcmd
+            $connParams = @{ ServerInstance = $ServerInstance; Database = $db; Query = $schemaQuery; QueryTimeout = 120 }
+            if (-not $_useWinAuth) {
+                $cmdInfo = Get-Command Invoke-Sqlcmd
+                if ($cmdInfo.Parameters.ContainsKey('Credential')) {
+                    $secPass = ConvertTo-SecureString $script:_credPass -AsPlainText -Force
+                    $connParams["Credential"] = New-Object System.Management.Automation.PSCredential($script:_credUser, $secPass)
+                } else {
+                    $connParams["Username"] = $script:_credUser
+                    $connParams["Password"] = $script:_credPass
+                }
+            }
+            $schemaResults = Invoke-Sqlcmd @connParams
+            $schemaList = @($schemaResults | ForEach-Object { $_.name })
+        }
 
         Write-Log "  Schemas descubiertos: $($schemaList -join ', ')"
     }

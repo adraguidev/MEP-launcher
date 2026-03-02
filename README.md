@@ -87,6 +87,135 @@ Menu interactivo:
 | `gather_sqlserver.ps1` | v4.1 | Metadata de instancia, BDs, schemas, objetos |
 | `export_etl.ps1` | v1.1 | Exportacion de paquetes SSIS y artefactos ETL |
 
+## Como funciona internamente
+
+### Parametros de entrada
+
+#### `gather_sqlserver.ps1`
+
+| Parametro | Obligatorio | Default | Descripcion |
+|-----------|:-----------:|---------|-------------|
+| `-ServerInstance` | **SI** | - | Instancia SQL Server. Ej: `MISERVIDOR`, `MISERVIDOR\INST1`, `10.0.1.5,1433` |
+| `-Databases` | no | *(todas)* | Lista de BDs separadas por coma. Si se omite, descubre automaticamente todas las BDs de usuario |
+| `-Schemas` | no | *(todos)* | Lista de schemas separados por coma. Si se omite, descubre automaticamente todos los schemas con objetos |
+| `-OutputDir` | no | `.\mep_sqlserver_SERVIDOR_YYYYMMDD_HHMMSS` | Carpeta de salida. Se crea automaticamente |
+| `-UseWindowsAuth` | no | `true` | `true` = Windows integrada, `false` = SQL Auth |
+| `-SqlUser` | no | - | Usuario SQL (solo si `UseWindowsAuth=false`) |
+| `-SqlPassword` | no | - | Password SQL (solo si `UseWindowsAuth=false`) |
+
+#### `export_etl.ps1`
+
+| Parametro | Obligatorio | Default | Descripcion |
+|-----------|:-----------:|---------|-------------|
+| `-ServerInstance` | **SI** | - | Instancia SQL Server |
+| `-OutputDir` | no | `.\mep_etl_SERVIDOR_YYYYMMDD_HHMMSS` | Carpeta de salida |
+| `-UseWindowsAuth` | no | `true` | Metodo de autenticacion |
+| `-SqlUser` / `-SqlPassword` | no | - | Credenciales SQL |
+| `-ScanPaths` | no | `C:\SSIS,D:\SSIS,E:\SSIS,C:\ETL,D:\ETL,...` | Rutas donde buscar `.dtsx` en disco |
+
+### Seleccion de bases de datos
+
+```
+Si -Databases fue proporcionado:
+    Usar exactamente esas BDs (separadas por coma)
+
+Si -Databases esta vacio (default):
+    Ejecutar: SELECT name FROM sys.databases
+              WHERE database_id > 4          -- excluye master, model, msdb, tempdb
+              AND state_desc = 'ONLINE'      -- solo BDs accesibles
+              ORDER BY name
+    -> Procesar TODAS las BDs de usuario descubiertas
+```
+
+**Ejemplo**: un servidor con 3 BDs de usuario (`DWH`, `Staging`, `AppData`) procesara las 3 automaticamente.
+Con `-Databases "DWH,Staging"` solo procesaria esas 2.
+
+### Seleccion de schemas dentro de cada BD
+
+```
+Si -Schemas fue proporcionado:
+    Usar exactamente esos schemas en TODAS las BDs
+
+Si -Schemas esta vacio (default):
+    Por cada BD, ejecutar:
+        SELECT DISTINCT s.name
+        FROM sys.schemas s
+        INNER JOIN sys.objects o ON s.schema_id = o.schema_id
+        WHERE s.name NOT IN ('sys','INFORMATION_SCHEMA','guest',
+              'db_owner','db_accessadmin','db_securityadmin',
+              'db_ddladmin','db_backupoperator','db_datareader',
+              'db_datawriter','db_denydatareader','db_denydatawriter')
+        AND o.type IN ('U','V','P','FN','IF','TF','TR')
+    -> Solo schemas que TIENEN objetos (tablas, vistas, SPs, funciones, triggers)
+    -> Excluye schemas de sistema y roles built-in
+```
+
+**Ejemplo**: una BD con schemas `dbo`, `etl`, `staging`, `dim`, `fact` (todos con tablas) generara 14 CSVs x 5 schemas = 70 archivos para esa BD. Un schema vacio se omite.
+
+### Flujo de ejecucion completo
+
+```
+1. VALIDACION
+   - Verifica admin (UAC)
+   - Detecta instancias SQL Server via registro de Windows
+   - Valida que exista sqlcmd o Invoke-Sqlcmd
+   - Establece autenticacion (Windows o SQL)
+
+2. GATHER (gather_sqlserver.ps1)
+   Fase 0: Detecta version SQL Server (2008R2-2022) y adapta queries
+   Fase 1: Info de instancia          -> _instance/ (4-5 CSVs)
+   Fase 2: Descubre BDs              -> lista de BDs a procesar
+   Fase 3: Por cada BD:
+           - Descubre schemas         -> lista de schemas con objetos
+           - Info a nivel de BD       -> BD/_database/ (4 CSVs)
+           - Por cada schema:         -> BD/schema/ (14 CSVs)
+             S01-S14: tablas, PKs, FKs, indexes, SPs, funciones,
+                      triggers, vistas, sizes, dependencias, etc.
+   Fase 4: Resumen + conteo de archivos
+
+3. EXPORT ETL (export_etl.ps1)
+   Fase 1: SSISDB catalog    -> proyectos .ispac, .dtsx, parametros, historial
+   Fase 2: MSDB legacy       -> paquetes SSIS almacenados en msdb (via dtutil)
+   Fase 3: Agent Jobs        -> SQL embebido en job steps, referencias a SSIS
+   Fase 4: File system scan  -> .dtsx y .dtsConfig encontrados en disco
+   Fase 5: Post-proceso      -> extrae SQL embebido, connections, dataflows de cada .dtsx
+   Sanitizacion: redacta passwords/tokens en todo el output
+```
+
+### Trazabilidad del run
+
+Cada ejecucion genera logs detallados con timestamp de cada operacion:
+
+```
+[2026-03-02 10:15:23] [INFO] MEP SQL Server Gatherer v4.1
+[2026-03-02 10:15:23] [INFO] Servidor: MISERVIDOR\PROD
+[2026-03-02 10:15:23] [INFO] Auth: Windows (integrated)
+[2026-03-02 10:15:23] [INFO] SQL Tools: sqlcmd=SI, Invoke-Sqlcmd=SI
+[2026-03-02 10:15:23] [INFO] SQL Server Version: 15 (2019)
+[2026-03-02 10:15:24] [INFO] BDs descubiertas: DWH, Staging, AppData
+[2026-03-02 10:15:24] [INFO]   Schemas descubiertos: dbo, etl, dim, fact
+[2026-03-02 10:15:24] [INFO]   [Server Config] OK (2 filas, 0.01 MB, 0.2s)
+...
+[2026-03-02 10:18:45] [INFO] RECOLECCION COMPLETADA
+[2026-03-02 10:18:45] [INFO]   Total archivos: 163
+[2026-03-02 10:18:45] [INFO]   Tamano total: 4.52 MB
+```
+
+- **`gather_sqlserver.log`**: dentro de la carpeta de output del gather
+- **`export_etl.log`**: dentro de la carpeta de output del ETL
+- Cada query individual registra: filas retornadas, tamano del archivo, tiempo de ejecucion
+- Los errores se registran con nivel `[ERROR]` o `[WARN]` sin detener la ejecucion
+
+### Prerequisitos en el servidor
+
+- Windows Server 2012 R2 o superior
+- PowerShell 3.0+ (incluido en Windows Server 2012 R2+)
+- **Al menos uno** de los siguientes para conectarse a SQL Server:
+  - `sqlcmd.exe` (incluido con SQL Server Client Tools)
+  - `Invoke-Sqlcmd` (modulo SQLPS o SqlServer de PowerShell)
+- Permisos: el login debe tener acceso de lectura a `sys.*` views y a las BDs objetivo
+- Ejecutar como Administrador (recomendado para acceso completo a registry y Agent Jobs)
+
 ## Que genera
 
 Detecta la version de SQL Server automaticamente y adapta las queries.
@@ -169,6 +298,12 @@ Comprimir las carpetas de output y entregar:
 ```powershell
 Compress-Archive -Path ".\mep_*" -DestinationPath "evidencia_MISERVIDOR.zip"
 ```
+
+## Limitaciones conocidas
+
+| Componente | Limitacion | Workaround |
+|------------|-----------|------------|
+| SSISDB `.ispac` export | Con SQL Auth, los archivos `.ispac` no se pueden exportar porque Microsoft los almacena encriptados internamente. Solo el CLR stored procedure `catalog.get_project` puede desencriptarlos, y requiere Windows Authentication. | Usar Windows Auth para obtener los `.ispac`/`.dtsx` completos. Con SQL Auth, el script exporta automaticamente un inventario de paquetes (`_package_inventory.txt`) como fallback. |
 
 ---
 

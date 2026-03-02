@@ -92,12 +92,36 @@ function Write-Log {
 
 function Run-SqlQuery {
     param([string]$SQL, [string]$Database = "master")
-    $sqlcmdArgs = @("-S", $ServerInstance, "-d", $Database,
-                    "-Q", $SQL, "-h", "-1", "-W", "-w", "65535", "-b")
-    if ($_useWinAuth) { $sqlcmdArgs += "-E" }
-    else { $sqlcmdArgs += @("-U", $script:_credUser, "-P", $script:_credPass) }
-    $result = & sqlcmd @sqlcmdArgs 2>>$LogFile
-    return $result
+    if ($script:_hasSqlcmd) {
+        $sqlcmdArgs = @("-S", $ServerInstance, "-d", $Database,
+                        "-Q", $SQL, "-h", "-1", "-W", "-w", "65535", "-b")
+        if ($_useWinAuth) { $sqlcmdArgs += "-E" }
+        else { $sqlcmdArgs += @("-U", $script:_credUser, "-P", $script:_credPass) }
+        $result = & sqlcmd @sqlcmdArgs 2>>$LogFile
+        return $result
+    } else {
+        # Fallback: Invoke-Sqlcmd
+        $connParams = @{ ServerInstance = $ServerInstance; Database = $Database;
+                         Query = $SQL; QueryTimeout = 600; MaxCharLength = 1000000 }
+        if (-not $_useWinAuth) {
+            $cmdInfo = Get-Command Invoke-Sqlcmd
+            if ($cmdInfo.Parameters.ContainsKey('Credential')) {
+                $secPass = ConvertTo-SecureString $script:_credPass -AsPlainText -Force
+                $connParams["Credential"] = New-Object System.Management.Automation.PSCredential($script:_credUser, $secPass)
+            } else {
+                $connParams["Username"] = $script:_credUser
+                $connParams["Password"] = $script:_credPass
+            }
+        }
+        $results = Invoke-Sqlcmd @connParams
+        # Return as plain text lines (same format as sqlcmd output)
+        if ($results) {
+            return @($results | ForEach-Object {
+                ($_.PSObject.Properties | ForEach-Object { $_.Value }) -join ','
+            })
+        }
+        return @()
+    }
 }
 
 function Run-SqlToFile {
@@ -409,6 +433,34 @@ if (-not $_useWinAuth) {
 } else {
     Write-Log "Auth: Windows (integrated)"
 }
+
+# --- Validate SQL tools availability ---
+$script:_hasSqlcmd = $false
+$script:_hasInvokeSqlcmd = $false
+try { Get-Command sqlcmd -ErrorAction Stop | Out-Null; $script:_hasSqlcmd = $true } catch {}
+try { Get-Command Invoke-Sqlcmd -ErrorAction Stop | Out-Null; $script:_hasInvokeSqlcmd = $true } catch {}
+
+if (-not $script:_hasSqlcmd -and -not $script:_hasInvokeSqlcmd) {
+    Write-Log "============================================================" "ERROR"
+    Write-Log "ERROR CRITICO: No se encontro 'sqlcmd' ni 'Invoke-Sqlcmd'" "ERROR"
+    Write-Log "" "ERROR"
+    Write-Log "Instale alguno de los siguientes:" "ERROR"
+    Write-Log "  1) sqlcmd: https://learn.microsoft.com/sql/tools/sqlcmd/sqlcmd-utility" "ERROR"
+    Write-Log "     O instalar 'SQL Server Command Line Utilities' desde el instalador de SQL Server" "ERROR"
+    Write-Log "  2) Modulo SqlServer de PowerShell:" "ERROR"
+    Write-Log "     Install-Module -Name SqlServer -Scope CurrentUser" "ERROR"
+    Write-Log "  3) Importar SQLPS (si SQL Server esta instalado):" "ERROR"
+    Write-Log "     Import-Module SQLPS" "ERROR"
+    Write-Log "============================================================" "ERROR"
+    Write-Host ""
+    Write-Host "  [ERROR] No se encontro sqlcmd ni Invoke-Sqlcmd."
+    Write-Host "  Sin estas herramientas no es posible conectarse a SQL Server."
+    Write-Host "  Consulte el log para opciones de instalacion: $LogFile"
+    Pop-Location
+    exit 1
+}
+
+Write-Log "SQL Tools: sqlcmd=$(if($script:_hasSqlcmd){'SI'}else{'NO'}), Invoke-Sqlcmd=$(if($script:_hasInvokeSqlcmd){'SI'}else{'NO'})"
 
 $totalPackages = 0
 $totalSqlExtracted = 0
