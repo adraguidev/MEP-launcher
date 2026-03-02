@@ -576,29 +576,7 @@ ORDER BY f.name, p.name;
         }
 
         if (-not $exported) {
-            # T-SQL fallback: extract individual package XML directly
-            $pkgListQ = "SET NOCOUNT ON; SELECT name FROM SSISDB.catalog.packages WHERE project_id = $projectId ORDER BY name"
-            $pkgNames = Run-SqlQuery $pkgListQ
-
-            foreach ($pkgName in $pkgNames) {
-                $pkgName = $pkgName.Trim()
-                if (-not $pkgName -or $pkgName -match "rows affected" -or $pkgName -match "^\(") { continue }
-
-                $pkgFile = Join-Path $projDir "$pkgName"
-                # package_format_version contains the .dtsx XML as nvarchar
-                # But actually in SSISDB the packages are inside the .ispac binary
-                # We need to use BCP to extract the project binary and unzip
-
-                # Alternative: use the internal SP to get package data
-                Write-Log "    Package: $pkgName (T-SQL extraction limited - consider SSMS export)"
-            }
-
-            # Export project binary via BCP as last resort
-            $binaryFile = Join-Path $projDir "_project.ispac"
-            $bcpQuery = "SELECT object_data FROM SSISDB.internal.object_versions WHERE object_id = $projectId ORDER BY object_version_id DESC"
-
-            # Actually the simplest T-SQL approach: get_project returns a result set
-            # Let's try that
+            # Fallback: catalog.get_project (requires Windows auth for decryption)
             $tmpIspac = Join-Path $projDir "__tmp_project.ispac"
             try {
                 $conn = New-Object System.Data.SqlClient.SqlConnection
@@ -609,8 +587,8 @@ ORDER BY f.name, p.name;
                 }
                 $conn.Open()
                 $cmd = $conn.CreateCommand()
-                $cmd.CommandText = "EXEC [catalog].get_project @folder_name=N'$folderName', @project_name=N'$projectName'"
                 $cmd.CommandTimeout = 120
+                $cmd.CommandText = "EXEC [catalog].get_project @folder_name=N'$folderName', @project_name=N'$projectName'"
                 $reader = $cmd.ExecuteReader()
                 if ($reader.Read()) {
                     $bytes = [byte[]]::new($reader.GetBytes(0, 0, $null, 0, 0))
@@ -633,8 +611,28 @@ ORDER BY f.name, p.name;
                 $reader.Close()
                 $conn.Close()
             } catch {
-                Write-Log "    T-SQL fallback also failed: $_" "WARN"
-                Write-Log "    -> Export manually via SSMS: SSISDB > $folderName > $projectName > right-click" "WARN"
+                if (-not $_useWinAuth) {
+                    Write-Log "    SSISDB .ispac export requires Windows auth (encrypted storage)" "WARN"
+                    Write-Log "    Exporting package metadata instead..." "INFO"
+                    # Export package names and details from catalog views (accessible with SQL auth)
+                    $pkgInfoQ = @"
+SET NOCOUNT ON;
+SELECT p.name AS package_name,
+       p.package_format_version,
+       p.version_build,
+       p.description
+FROM SSISDB.catalog.packages p
+WHERE p.project_id = $projectId
+ORDER BY p.name;
+"@
+                    $pkgInfo = Run-SqlQuery $pkgInfoQ
+                    $pkgFile = Join-Path $projDir "_package_inventory.txt"
+                    $pkgInfo | Out-File -FilePath $pkgFile -Encoding UTF8
+                    Write-Log "    Saved package inventory ($(@($pkgInfo).Count) entries)"
+                    Write-Log "    -> To export .dtsx: use Windows auth or SSMS" "INFO"
+                } else {
+                    Write-Log "    SSISDB export failed: $_" "WARN"
+                }
             }
         }
 
