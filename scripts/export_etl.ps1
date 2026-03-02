@@ -96,7 +96,7 @@ function Run-SqlQuery {
         $sqlcmdArgs = @("-S", $ServerInstance, "-d", $Database,
                         "-Q", $SQL, "-h", "-1", "-W", "-w", "65535", "-b")
         if ($_useWinAuth) { $sqlcmdArgs += "-E" }
-        else { $sqlcmdArgs += @("-U", $script:_credUser, "-P", $script:_credPass) }
+        else { $sqlcmdArgs += @("-U", $script:_credUser) }
         $result = & sqlcmd @sqlcmdArgs 2>>$LogFile
         return $result
     } else {
@@ -153,7 +153,7 @@ function Run-SqlToFile {
         $sqlcmdArgs = @("-S", $ServerInstance, "-d", $Database,
                         "-Q", $SQL, "-s", ",", "-W", "-w", "65535", "-o", $OutFile)
         if ($_useWinAuth) { $sqlcmdArgs += "-E" }
-        else { $sqlcmdArgs += @("-U", $script:_credUser, "-P", $script:_credPass) }
+        else { $sqlcmdArgs += @("-U", $script:_credUser) }
         & sqlcmd @sqlcmdArgs 2>>$LogFile
     }
 }
@@ -432,6 +432,11 @@ if (-not $_useWinAuth) {
     }
 } else {
     Write-Log "Auth: Windows (integrated)"
+}
+
+# Set env var for sqlcmd (avoids -P argument parsing issues with special chars)
+if (-not $_useWinAuth -and $script:_credPass) {
+    $env:SQLCMDPASSWORD = $script:_credPass
 }
 
 # --- Validate SQL tools availability ---
@@ -1043,6 +1048,9 @@ Write-Log "Tamano total:   $totalSize MB (100% texto/XML)"
 Write-Log ""
 Write-Log "SIGUIENTE PASO:"
 Write-Log "  Comprimir: Compress-Archive -Path '$OutputDir\*' -DestinationPath 'etl_evidence.zip'"
+
+# Clean up credentials from environment
+$env:SQLCMDPASSWORD = $null
 
 # Restore original PowerShell location (balances Push-Location at script start)
 Pop-Location

@@ -22,7 +22,7 @@ Priorizar de arriba hacia abajo.
 - **Causa**: Caracteres como `$`, `` ` ``, `"`, `!` son interpretados por PowerShell antes de llegar a sqlcmd via `-P`.
 - **Ejemplo**: Password `Pa$$w0rd` -> PowerShell interpreta `$$` como variable -> sqlcmd recibe `Pa0rd`.
 - **Solucion propuesta**: Escapar el password o usar variables de entorno (`$env:SQLCMDPASSWORD`) en lugar de `-P`.
-- **Estado**: Pendiente
+- **Estado**: RESUELTO (v2.9) - Se usa `$env:SQLCMDPASSWORD` (oficial Microsoft) en vez de `-P`. El password no pasa por argument parsing y no aparece en la linea de comandos del proceso.
 
 ---
 
@@ -78,3 +78,4 @@ Priorizar de arriba hacia abajo.
 | Execution Policy bloquea scripts | Siempre usa `-ExecutionPolicy Bypass` |
 | Deteccion de version SQL Server | Automatica desde v1.0 |
 | `sqlcmd` no existe en el servidor | v2.9 (validacion + fallback Invoke-Sqlcmd) |
+| Passwords con caracteres especiales (`$`, `"`, etc.) | v2.9 (usa `$env:SQLCMDPASSWORD` en vez de `-P`) |

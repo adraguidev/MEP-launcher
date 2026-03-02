@@ -150,7 +150,7 @@ function Run-Query {
                 "-o", $OutFile
             )
             if ($_useWinAuth) { $sqlcmdArgs += "-E" }
-            else { $sqlcmdArgs += @("-U", $script:_credUser, "-P", $script:_credPass) }
+            else { $sqlcmdArgs += @("-U", $script:_credUser) }
 
             & sqlcmd @sqlcmdArgs 2>>$LogFile
 
@@ -263,7 +263,7 @@ function Run-QueryCSV {
                 "-w", "65535", "-o", $OutFile
             )
             if ($_useWinAuth) { $sqlcmdArgs += "-E" }
-            else { $sqlcmdArgs += @("-U", $script:_credUser, "-P", $script:_credPass) }
+            else { $sqlcmdArgs += @("-U", $script:_credUser) }
             & sqlcmd @sqlcmdArgs 2>>$LogFile
         }
 
@@ -312,6 +312,11 @@ if (-not $_useWinAuth) {
     }
 } else {
     Write-Log "Auth: Windows (integrated)"
+}
+
+# Set env var for sqlcmd (avoids -P argument parsing issues with special chars)
+if (-not $_useWinAuth -and $script:_credPass) {
+    $env:SQLCMDPASSWORD = $script:_credPass
 }
 
 # --- Validate SQL tools availability ---
@@ -474,7 +479,7 @@ if ($Databases) {
         $dbFile = Join-Path $OutputDir "_tmp_dbs.txt"
         $sqlcmdArgs = @("-S", $ServerInstance, "-Q", $dbListQuery, "-h", "-1", "-W", "-o", $dbFile)
         if ($_useWinAuth) { $sqlcmdArgs += "-E" }
-        else { $sqlcmdArgs += @("-U", $script:_credUser, "-P", $script:_credPass) }
+        else { $sqlcmdArgs += @("-U", $script:_credUser) }
         & sqlcmd @sqlcmdArgs 2>>$LogFile
 
         $dbList = Get-Content $dbFile -ErrorAction SilentlyContinue |
@@ -556,7 +561,7 @@ ORDER BY s.name;
             $schemaFile = Join-Path $OutputDir "_tmp_schemas.txt"
             $sqlcmdArgs = @("-S", $ServerInstance, "-d", $db, "-Q", $schemaQuery, "-h", "-1", "-W", "-o", $schemaFile)
             if ($_useWinAuth) { $sqlcmdArgs += "-E" }
-            else { $sqlcmdArgs += @("-U", $script:_credUser, "-P", $script:_credPass) }
+            else { $sqlcmdArgs += @("-U", $script:_credUser) }
             & sqlcmd @sqlcmdArgs 2>>$LogFile
 
             $schemaList = Get-Content $schemaFile -ErrorAction SilentlyContinue |
@@ -1006,6 +1011,9 @@ Write-Log ""
 Write-Log "SIGUIENTE PASO:"
 Write-Log "  Comprimir: Compress-Archive -Path '$OutputDir\*' -DestinationPath 'mep_evidence.zip'"
 Write-Log "  Entregar el .zip al equipo Stefanini"
+
+# Clean up credentials from environment
+$env:SQLCMDPASSWORD = $null
 
 # Restore original PowerShell location (balances Push-Location at script start)
 Pop-Location
