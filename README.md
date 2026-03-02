@@ -89,102 +89,94 @@ Menu interactivo:
 
 ## Como funciona internamente
 
-### Parametros de entrada
+### Que necesita el usuario para ejecutar
 
-#### `gather_sqlserver.ps1`
+1. Copiar `MEP_Gatherer.exe` al servidor
+2. Ejecutar como Administrador
+3. El exe pide 3 cosas interactivamente:
 
-| Parametro | Obligatorio | Default | Descripcion |
-|-----------|:-----------:|---------|-------------|
-| `-ServerInstance` | **SI** | - | Instancia SQL Server. Ej: `MISERVIDOR`, `MISERVIDOR\INST1`, `10.0.1.5,1433` |
-| `-Databases` | no | *(todas)* | Lista de BDs separadas por coma. Si se omite, descubre automaticamente todas las BDs de usuario |
-| `-Schemas` | no | *(todos)* | Lista de schemas separados por coma. Si se omite, descubre automaticamente todos los schemas con objetos |
-| `-OutputDir` | no | `.\mep_sqlserver_SERVIDOR_YYYYMMDD_HHMMSS` | Carpeta de salida. Se crea automaticamente |
-| `-UseWindowsAuth` | no | `true` | `true` = Windows integrada, `false` = SQL Auth |
-| `-SqlUser` | no | - | Usuario SQL (solo si `UseWindowsAuth=false`) |
-| `-SqlPassword` | no | - | Password SQL (solo si `UseWindowsAuth=false`) |
+| Paso | Pregunta | Opciones |
+|------|----------|----------|
+| 1 | Instancia SQL Server | Autodetecta las instaladas, o ingresar manualmente |
+| 2 | Autenticacion | **W** = Windows (cuenta actual) / **S** = SQL Server (usuario + password) |
+| 3 | Que ejecutar | **1** = Todo (recomendado) / **2** = Solo metadata / **3** = Solo ETL / **4** = Custom / **5** = Cancelar |
 
-#### `export_etl.ps1`
+La **opcion 4 (Custom)** es la unica que pide inputs adicionales:
+- Bases de datos (separadas por coma, o ENTER para todas)
+- Schemas (separados por coma, o ENTER para todos)
 
-| Parametro | Obligatorio | Default | Descripcion |
-|-----------|:-----------:|---------|-------------|
-| `-ServerInstance` | **SI** | - | Instancia SQL Server |
-| `-OutputDir` | no | `.\mep_etl_SERVIDOR_YYYYMMDD_HHMMSS` | Carpeta de salida |
-| `-UseWindowsAuth` | no | `true` | Metodo de autenticacion |
-| `-SqlUser` / `-SqlPassword` | no | - | Credenciales SQL |
-| `-ScanPaths` | no | `C:\SSIS,D:\SSIS,E:\SSIS,C:\ETL,D:\ETL,...` | Rutas donde buscar `.dtsx` en disco |
+### Como selecciona bases de datos
 
-### Seleccion de bases de datos
+| Opcion elegida | Comportamiento |
+|----------------|---------------|
+| **1, 2, 3** (Todo/Metadata/ETL) | Descubre **automaticamente** todas las BDs de usuario |
+| **4** (Custom) sin especificar BDs | Igual: descubre todas automaticamente |
+| **4** (Custom) con BDs especificas | Solo procesa las BDs indicadas |
 
-```
-Si -Databases fue proporcionado:
-    Usar exactamente esas BDs (separadas por coma)
-
-Si -Databases esta vacio (default):
-    Ejecutar: SELECT name FROM sys.databases
-              WHERE database_id > 4          -- excluye master, model, msdb, tempdb
-              AND state_desc = 'ONLINE'      -- solo BDs accesibles
-              ORDER BY name
-    -> Procesar TODAS las BDs de usuario descubiertas
+El autodescubrimiento ejecuta:
+```sql
+SELECT name FROM sys.databases
+WHERE database_id > 4       -- excluye master, model, msdb, tempdb
+AND state_desc = 'ONLINE'   -- solo BDs accesibles
 ```
 
-**Ejemplo**: un servidor con 3 BDs de usuario (`DWH`, `Staging`, `AppData`) procesara las 3 automaticamente.
-Con `-Databases "DWH,Staging"` solo procesaria esas 2.
+**Ejemplo**: un servidor con BDs `DWH`, `Staging`, `AppData` -> las 3 se procesan automaticamente.
+Con Custom + `DWH,Staging` -> solo esas 2.
 
-### Seleccion de schemas dentro de cada BD
+### Como selecciona schemas dentro de cada BD
 
-```
-Si -Schemas fue proporcionado:
-    Usar exactamente esos schemas en TODAS las BDs
+| Opcion elegida | Comportamiento |
+|----------------|---------------|
+| **1, 2, 3** (Todo/Metadata/ETL) | Descubre **automaticamente** todos los schemas con objetos |
+| **4** (Custom) sin especificar schemas | Igual: descubre todos automaticamente |
+| **4** (Custom) con schemas especificos | Solo procesa los schemas indicados (en todas las BDs) |
 
-Si -Schemas esta vacio (default):
-    Por cada BD, ejecutar:
-        SELECT DISTINCT s.name
-        FROM sys.schemas s
-        INNER JOIN sys.objects o ON s.schema_id = o.schema_id
-        WHERE s.name NOT IN ('sys','INFORMATION_SCHEMA','guest',
-              'db_owner','db_accessadmin','db_securityadmin',
-              'db_ddladmin','db_backupoperator','db_datareader',
-              'db_datawriter','db_denydatareader','db_denydatawriter')
-        AND o.type IN ('U','V','P','FN','IF','TF','TR')
-    -> Solo schemas que TIENEN objetos (tablas, vistas, SPs, funciones, triggers)
-    -> Excluye schemas de sistema y roles built-in
+El autodescubrimiento ejecuta por cada BD:
+```sql
+SELECT DISTINCT s.name
+FROM sys.schemas s
+INNER JOIN sys.objects o ON s.schema_id = o.schema_id
+WHERE s.name NOT IN ('sys','INFORMATION_SCHEMA','guest',
+      'db_owner','db_accessadmin', ... otros roles built-in ...)
+AND o.type IN ('U','V','P','FN','IF','TF','TR')
 ```
 
-**Ejemplo**: una BD con schemas `dbo`, `etl`, `staging`, `dim`, `fact` (todos con tablas) generara 14 CSVs x 5 schemas = 70 archivos para esa BD. Un schema vacio se omite.
+Es decir: **solo schemas que tienen al menos una tabla, vista, SP, funcion o trigger**. Los schemas vacios y de sistema se omiten.
+
+**Ejemplo**: BD con schemas `dbo`, `etl`, `staging`, `dim`, `fact` (todos con tablas) -> genera 14 CSVs por schema = 70 archivos para esa BD.
 
 ### Flujo de ejecucion completo
 
 ```
-1. VALIDACION
-   - Verifica admin (UAC)
-   - Detecta instancias SQL Server via registro de Windows
-   - Valida que exista sqlcmd o Invoke-Sqlcmd
-   - Establece autenticacion (Windows o SQL)
+1. INICIO (exe)
+   - Solicita permisos de Administrador (UAC)
+   - Detecta instancias SQL Server instaladas (registro de Windows)
+   - Pide autenticacion y accion a ejecutar
+   - Valida que exista sqlcmd o Invoke-Sqlcmd en el servidor
 
-2. GATHER (gather_sqlserver.ps1)
+2. METADATA (opcion 1 o 2)
    Fase 0: Detecta version SQL Server (2008R2-2022) y adapta queries
-   Fase 1: Info de instancia          -> _instance/ (4-5 CSVs)
-   Fase 2: Descubre BDs              -> lista de BDs a procesar
+   Fase 1: Info de instancia             -> _instance/ (config, jobs, logins)
+   Fase 2: Descubre BDs de usuario       -> lista de BDs a procesar
    Fase 3: Por cada BD:
-           - Descubre schemas         -> lista de schemas con objetos
-           - Info a nivel de BD       -> BD/_database/ (4 CSVs)
-           - Por cada schema:         -> BD/schema/ (14 CSVs)
-             S01-S14: tablas, PKs, FKs, indexes, SPs, funciones,
-                      triggers, vistas, sizes, dependencias, etc.
-   Fase 4: Resumen + conteo de archivos
+           a) Descubre schemas con objetos
+           b) Info a nivel de BD          -> BD/_database/ (principals, roles, permisos)
+           c) Por cada schema             -> BD/schema/ (14 CSVs: tablas, PKs, FKs,
+              indexes, SPs, funciones, triggers, vistas, sizes, dependencias...)
+   Fase 4: Resumen con conteo de archivos
 
-3. EXPORT ETL (export_etl.ps1)
-   Fase 1: SSISDB catalog    -> proyectos .ispac, .dtsx, parametros, historial
-   Fase 2: MSDB legacy       -> paquetes SSIS almacenados en msdb (via dtutil)
-   Fase 3: Agent Jobs        -> SQL embebido en job steps, referencias a SSIS
-   Fase 4: File system scan  -> .dtsx y .dtsConfig encontrados en disco
-   Fase 5: Post-proceso      -> extrae SQL embebido, connections, dataflows de cada .dtsx
+3. ETL/SSIS (opcion 1 o 3)
+   Fase 1: SSISDB catalog     -> proyectos .ispac, .dtsx, parametros, historial
+   Fase 2: MSDB legacy        -> paquetes SSIS almacenados en msdb
+   Fase 3: Agent Jobs         -> SQL embebido en job steps, referencias a SSIS
+   Fase 4: File system scan   -> .dtsx y .dtsConfig encontrados en disco
+   Post-proceso: extrae SQL embebido, connections, dataflows de cada .dtsx
    Sanitizacion: redacta passwords/tokens en todo el output
 ```
 
 ### Trazabilidad del run
 
-Cada ejecucion genera logs detallados con timestamp de cada operacion:
+Cada ejecucion genera **logs detallados** con timestamp de cada operacion dentro de las carpetas de output:
 
 ```
 [2026-03-02 10:15:23] [INFO] MEP SQL Server Gatherer v4.1
@@ -201,20 +193,19 @@ Cada ejecucion genera logs detallados con timestamp de cada operacion:
 [2026-03-02 10:18:45] [INFO]   Tamano total: 4.52 MB
 ```
 
-- **`gather_sqlserver.log`**: dentro de la carpeta de output del gather
-- **`export_etl.log`**: dentro de la carpeta de output del ETL
-- Cada query individual registra: filas retornadas, tamano del archivo, tiempo de ejecucion
-- Los errores se registran con nivel `[ERROR]` o `[WARN]` sin detener la ejecucion
+| Archivo de log | Ubicacion | Contenido |
+|----------------|-----------|-----------|
+| `gather_sqlserver.log` | Dentro de `mep_sqlserver_*/` | Cada query: filas, tamano, tiempo. Errores con `[ERROR]`/`[WARN]` |
+| `export_etl.log` | Dentro de `mep_etl_*/` | Paquetes exportados, artefactos extraidos, errores |
+
+Los errores **no detienen** la ejecucion: si una query falla, se registra y continua con la siguiente.
 
 ### Prerequisitos en el servidor
 
 - Windows Server 2012 R2 o superior
-- PowerShell 3.0+ (incluido en Windows Server 2012 R2+)
-- **Al menos uno** de los siguientes para conectarse a SQL Server:
-  - `sqlcmd.exe` (incluido con SQL Server Client Tools)
-  - `Invoke-Sqlcmd` (modulo SQLPS o SqlServer de PowerShell)
-- Permisos: el login debe tener acceso de lectura a `sys.*` views y a las BDs objetivo
-- Ejecutar como Administrador (recomendado para acceso completo a registry y Agent Jobs)
+- SQL Server instalado (2008 R2 a 2022)
+- Ejecutar como **Administrador**
+- El exe detecta automaticamente las herramientas SQL disponibles (`sqlcmd` o `Invoke-Sqlcmd`). Si no encuentra ninguna, muestra instrucciones de instalacion y se detiene.
 
 ## Que genera
 
