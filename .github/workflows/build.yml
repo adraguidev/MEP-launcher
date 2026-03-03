@@ -36,6 +36,15 @@ jobs:
       - name: Build EXE
         run: pyinstaller mep_launcher.spec
 
+      - name: Commit EXE to repo
+        run: |
+          copy dist\MEP_Gatherer.exe MEP_Gatherer.exe
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add MEP_Gatherer.exe
+          git diff --cached --quiet || git commit -m "Build MEP_Gatherer.exe [skip ci]"
+          git push
+
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
