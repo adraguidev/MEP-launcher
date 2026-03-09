@@ -3,6 +3,9 @@
 chcp 65001 >nul 2>&1
 
 setlocal EnableDelayedExpansion
+set "LAUNCHER_LOG=%~dp0MEP_Gatherer_launcher.log"
+set "LAUNCHER_FALLBACK_LOG=%TEMP%\MEP_Gatherer_launcher.log"
+call :log_line INFO "Inicio de launcher desde %~dp0"
 
 
 
@@ -30,6 +33,40 @@ title MEP Gatherer - Stefanini Group
 
 :: ---------------------------------------------------------------------------
 
+:: Verificar PowerShell disponible
+
+:: ---------------------------------------------------------------------------
+
+where powershell.exe >nul 2>&1
+
+if %errorlevel% neq 0 (
+
+    call :log_error "PowerShell no encontrado en PATH."
+
+    echo.
+
+    echo   [ERROR] PowerShell no encontrado en el PATH.
+
+    echo.
+
+    echo   Este equipo requiere Windows PowerShell 2.0 o superior.
+
+    echo   En Windows 7 / Server 2008 R2 normalmente viene instalado por defecto.
+
+    echo   Si falta, repare la instalacion de PowerShell/WMF antes de continuar.
+
+    echo.
+
+    pause
+
+    exit /b 1
+
+)
+
+
+
+:: ---------------------------------------------------------------------------
+
 :: Verificar elevacion de administrador
 
 :: NO intenta auto-elevarse (causa ventanas que cierran solas en WS2008R2).
@@ -41,6 +78,8 @@ title MEP Gatherer - Stefanini Group
 powershell -NoProfile -Command "if(-not([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)){exit 1}" >nul 2>&1
 
 if %errorlevel% neq 0 (
+
+    call :log_error "El launcher no se ejecuto como Administrador."
 
     echo.
 
@@ -78,38 +117,6 @@ if %errorlevel% neq 0 (
 
 
 
-:: ---------------------------------------------------------------------------
-
-:: Verificar PowerShell disponible
-
-:: ---------------------------------------------------------------------------
-
-where powershell.exe >nul 2>&1
-
-if %errorlevel% neq 0 (
-
-    echo.
-
-    echo   [ERROR] PowerShell no encontrado en el PATH.
-
-    echo.
-
-    echo   Este equipo requiere Windows PowerShell 3.0 o superior.
-
-    echo   Descargue WMF 4.0 (compatible con Windows 7 / Server 2008 R2):
-
-    echo   https://www.microsoft.com/en-us/download/details.aspx?id=40855
-
-    echo.
-
-    pause
-
-    exit /b 1
-
-)
-
-
-
 :: Obtener version de PowerShell
 
 for /f "delims=" %%V in ('powershell -NoProfile -Command "$PSVersionTable.PSVersion.Major" 2^>nul') do set "PS_MAJOR=%%V"
@@ -134,6 +141,8 @@ set "ETL_PS1=%SCRIPT_DIR%\export_etl.ps1"
 
 if not exist "%GATHER_PS1%" (
 
+    call :log_error "No se encontro gather_sqlserver.ps1 en %GATHER_PS1%"
+
     echo.
 
     echo   [ERROR] Script no encontrado: gather_sqlserver.ps1
@@ -155,6 +164,8 @@ if not exist "%GATHER_PS1%" (
 )
 
 if not exist "%ETL_PS1%" (
+
+    call :log_error "No se encontro export_etl.ps1 en %ETL_PS1%"
 
     echo.
 
@@ -179,6 +190,11 @@ set "HAS_SQLCMD=NO"
 where sqlcmd >nul 2>&1
 
 if %errorlevel% equ 0 set "HAS_SQLCMD=SI"
+
+set "EXEC_RC=0"
+set "OVERALL_RC=0"
+set "SQL_PASS_B64="
+set "MEP_SQLPASSWORD_B64="
 
 
 
@@ -220,9 +236,13 @@ if !PS_MAJOR! LSS 3 (
 
 if "%HAS_SQLCMD%"=="SI" (
 
+    call :log_info "sqlcmd detectado en PATH."
+
     echo   [OK] sqlcmd disponible
 
 ) else (
+
+    call :log_warn "sqlcmd no encontrado en PATH. Se intentara fallback a Invoke-Sqlcmd."
 
     echo   [WARN] sqlcmd no encontrado en PATH
 
@@ -285,7 +305,6 @@ if %INST_COUNT% gtr 0 (
     if !INST_NUM! geq 1 if !INST_NUM! leq %INST_COUNT% (
 
         call set "SERVER_INSTANCE=%%INST_!INST_NUM!%%"
-
         goto got_instance
 
     )
@@ -314,6 +333,8 @@ set /p "SERVER_INSTANCE=  Instancia SQL Server (ej: SERVIDOR, SERVIDOR\INST, 10.
 
 if "%SERVER_INSTANCE%"=="" (
 
+    call :log_error "No se ingreso instancia SQL Server."
+
     echo.
 
     echo   [ERROR] Debe ingresar una instancia de SQL Server.
@@ -325,6 +346,8 @@ if "%SERVER_INSTANCE%"=="" (
     exit /b 1
 
 )
+
+call :log_info "Instancia SQL seleccionada: %SERVER_INSTANCE%"
 
 
 
@@ -388,11 +411,14 @@ echo.
 
 echo   [OK] Autenticacion Windows
 
+call :log_info "Autenticacion seleccionada: Windows"
+
 set "USE_WIN_AUTH=true"
 
 set "SQL_USER="
 
-set "SQL_PASS="
+set "SQL_PASS_B64="
+set "MEP_SQLPASSWORD_B64="
 
 goto choose_action
 
@@ -404,15 +430,32 @@ echo.
 
 set "SQL_USER="
 
-set "SQL_PASS="
+set "SQL_PASS_B64="
+set "MEP_SQLPASSWORD_B64="
 
 set /p "SQL_USER=  Usuario SQL: "
 
-set /p "SQL_PASS=  Password:    "
+call :prompt_sql_password_b64
+
+if %errorlevel% neq 0 (
+
+    call :log_error "Fallo al capturar password SQL en modo seguro."
+
+    echo.
+
+    echo   [ERROR] No se pudo capturar el password SQL.
+
+    echo          Intente nuevamente.
+
+    goto auth_sql
+
+)
 
 echo.
 
 echo   [OK] Autenticacion SQL Server
+
+call :log_info "Autenticacion seleccionada: SQL Server para usuario %SQL_USER%"
 
 set "USE_WIN_AUTH=false"
 
@@ -476,6 +519,9 @@ goto action_input
 
 :run_all
 
+set "OVERALL_RC=0"
+call :log_info "Inicio opcion 1: metadata + ETL"
+
 echo.
 
 echo === Fase 1/2: Recolectando metadata de SQL Server... ===
@@ -487,6 +533,9 @@ call :exec_gather
 echo --------------------------------------------------------------
 
 if %EXEC_RC% neq 0 (
+
+    set "OVERALL_RC=%EXEC_RC%"
+    call :log_warn "Fase 1 (metadata) termino con codigo %EXEC_RC%."
 
     echo.
 
@@ -508,6 +557,9 @@ echo --------------------------------------------------------------
 
 if %EXEC_RC% neq 0 (
 
+    set "OVERALL_RC=%EXEC_RC%"
+    call :log_warn "Fase 2 (ETL) termino con codigo %EXEC_RC%."
+
     echo.
 
     echo   [WARN] Fase 2 termino con codigo %EXEC_RC%.
@@ -522,6 +574,9 @@ goto done
 
 :run_gather
 
+set "OVERALL_RC=0"
+call :log_info "Inicio opcion 2: solo metadata"
+
 echo.
 
 echo === Fase 1: Metadata SQL Server... ===
@@ -533,6 +588,9 @@ call :exec_gather
 echo --------------------------------------------------------------
 
 if %EXEC_RC% neq 0 (
+
+    set "OVERALL_RC=%EXEC_RC%"
+    call :log_warn "Metadata termino con codigo %EXEC_RC%."
 
     echo.
 
@@ -548,6 +606,9 @@ goto done
 
 :run_etl
 
+set "OVERALL_RC=0"
+call :log_info "Inicio opcion 3: solo ETL"
+
 echo.
 
 echo === Fase 2: ETL/SSIS... ===
@@ -559,6 +620,9 @@ call :exec_etl
 echo --------------------------------------------------------------
 
 if %EXEC_RC% neq 0 (
+
+    set "OVERALL_RC=%EXEC_RC%"
+    call :log_warn "ETL termino con codigo %EXEC_RC%."
 
     echo.
 
@@ -573,6 +637,9 @@ goto done
 
 
 :run_custom
+
+set "OVERALL_RC=0"
+call :log_info "Inicio opcion 4: custom"
 
 echo.
 
@@ -594,6 +661,9 @@ call :exec_gather_custom
 
 echo --------------------------------------------------------------
 
+if %EXEC_RC% neq 0 set "OVERALL_RC=%EXEC_RC%"
+if %EXEC_RC% neq 0 call :log_warn "Metadata custom termino con codigo %EXEC_RC%."
+
 echo.
 
 echo === Fase 2/2: ETL/SSIS... ===
@@ -603,6 +673,9 @@ echo --------------------------------------------------------------
 call :exec_etl
 
 echo --------------------------------------------------------------
+
+if %EXEC_RC% neq 0 set "OVERALL_RC=%EXEC_RC%"
+if %EXEC_RC% neq 0 call :log_warn "ETL custom termino con codigo %EXEC_RC%."
 
 goto done
 
@@ -625,6 +698,7 @@ goto done
 :exec_gather
 
 set EXEC_RC=0
+call :log_info "Ejecutando gather_sqlserver.ps1 para %SERVER_INSTANCE%"
 
 if "%USE_WIN_AUTH%"=="true" (
 
@@ -632,11 +706,13 @@ if "%USE_WIN_AUTH%"=="true" (
 
 ) else (
 
-    powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%GATHER_PS1%" -ServerInstance "%SERVER_INSTANCE%" -UseWindowsAuth false -SqlUser "%SQL_USER%" -SqlPassword "%SQL_PASS%"
+    powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%GATHER_PS1%" -ServerInstance "%SERVER_INSTANCE%" -UseWindowsAuth false -SqlUser "%SQL_USER%"
 
 )
 
 set EXEC_RC=%errorlevel%
+
+if %EXEC_RC% neq 0 call :log_error "gather_sqlserver.ps1 devolvio %EXEC_RC%"
 
 exit /b
 
@@ -645,6 +721,7 @@ exit /b
 :exec_gather_custom
 
 set EXEC_RC=0
+call :log_info "Ejecutando gather_sqlserver.ps1 (custom) para %SERVER_INSTANCE%"
 
 if "%USE_WIN_AUTH%"=="true" (
 
@@ -672,23 +749,25 @@ if "%USE_WIN_AUTH%"=="true" (
 
         if not "%CUSTOM_SCHEMAS%"=="" (
 
-            powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%GATHER_PS1%" -ServerInstance "%SERVER_INSTANCE%" -UseWindowsAuth false -SqlUser "%SQL_USER%" -SqlPassword "%SQL_PASS%" -Databases "%CUSTOM_DBS%" -Schemas "%CUSTOM_SCHEMAS%"
+            powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%GATHER_PS1%" -ServerInstance "%SERVER_INSTANCE%" -UseWindowsAuth false -SqlUser "%SQL_USER%" -Databases "%CUSTOM_DBS%" -Schemas "%CUSTOM_SCHEMAS%"
 
         ) else (
 
-            powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%GATHER_PS1%" -ServerInstance "%SERVER_INSTANCE%" -UseWindowsAuth false -SqlUser "%SQL_USER%" -SqlPassword "%SQL_PASS%" -Databases "%CUSTOM_DBS%"
+            powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%GATHER_PS1%" -ServerInstance "%SERVER_INSTANCE%" -UseWindowsAuth false -SqlUser "%SQL_USER%" -Databases "%CUSTOM_DBS%"
 
         )
 
     ) else (
 
-        powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%GATHER_PS1%" -ServerInstance "%SERVER_INSTANCE%" -UseWindowsAuth false -SqlUser "%SQL_USER%" -SqlPassword "%SQL_PASS%"
+        powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%GATHER_PS1%" -ServerInstance "%SERVER_INSTANCE%" -UseWindowsAuth false -SqlUser "%SQL_USER%"
 
     )
 
 )
 
 set EXEC_RC=%errorlevel%
+
+if %EXEC_RC% neq 0 call :log_error "gather_sqlserver.ps1 (custom) devolvio %EXEC_RC%"
 
 exit /b
 
@@ -697,6 +776,7 @@ exit /b
 :exec_etl
 
 set EXEC_RC=0
+call :log_info "Ejecutando export_etl.ps1 para %SERVER_INSTANCE%"
 
 if "%USE_WIN_AUTH%"=="true" (
 
@@ -704,13 +784,32 @@ if "%USE_WIN_AUTH%"=="true" (
 
 ) else (
 
-    powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%ETL_PS1%" -ServerInstance "%SERVER_INSTANCE%" -UseWindowsAuth false -SqlUser "%SQL_USER%" -SqlPassword "%SQL_PASS%"
+    powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%ETL_PS1%" -ServerInstance "%SERVER_INSTANCE%" -UseWindowsAuth false -SqlUser "%SQL_USER%"
 
 )
 
 set EXEC_RC=%errorlevel%
 
+if %EXEC_RC% neq 0 call :log_error "export_etl.ps1 devolvio %EXEC_RC%"
+
 exit /b
+
+
+
+:: ---------------------------------------------------------------------------
+
+:prompt_sql_password_b64
+
+set "SQL_PASS_B64="
+
+for /f "usebackq delims=" %%P in (`powershell.exe -NoProfile -Command "$sec = Read-Host '  Password SQL' -AsSecureString; $bstr = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($sec); try { $plain = [Runtime.InteropServices.Marshal]::PtrToStringAuto($bstr); [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($plain)) } finally { if ($bstr -ne [IntPtr]::Zero) { [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($bstr) } }"`) do set "SQL_PASS_B64=%%P"
+
+if not defined SQL_PASS_B64 exit /b 1
+
+set "MEP_SQLPASSWORD_B64=%SQL_PASS_B64%"
+call :log_info "Password SQL capturada en modo seguro."
+
+exit /b 0
 
 
 
@@ -721,6 +820,9 @@ exit /b
 echo.
 
 echo   Cancelado.
+
+set "OVERALL_RC=0"
+call :log_warn "Ejecucion cancelada por usuario."
 
 goto end
 
@@ -736,15 +838,50 @@ echo   COMPLETADO. Comprima las carpetas mep_* y entreguela.
 
 echo ==============================================================
 
+if "%OVERALL_RC%"=="0" (
+    call :log_info "Ejecucion completada sin errores fatales."
+) else (
+    call :log_warn "Ejecucion completada con codigo final %OVERALL_RC%."
+)
+
 
 
 :end
 
 echo.
 
-set "SQL_PASS="
+if not defined OVERALL_RC set "OVERALL_RC=0"
+set "FINAL_RC=%OVERALL_RC%"
+
+set "SQL_PASS_B64="
+set "MEP_SQLPASSWORD_B64="
 
 pause
 
-endlocal
+endlocal & exit /b %FINAL_RC%
+
+
+
+:log_info
+call :log_line INFO "%~1"
+exit /b 0
+
+
+
+:log_warn
+call :log_line WARN "%~1"
+exit /b 0
+
+
+
+:log_error
+call :log_line ERROR "%~1"
+exit /b 0
+
+
+
+:log_line
+>>"%LAUNCHER_LOG%" echo [%date% %time%] [%~1] %~2
+>>"%LAUNCHER_FALLBACK_LOG%" echo [%date% %time%] [%~1] %~2
+exit /b 0
 

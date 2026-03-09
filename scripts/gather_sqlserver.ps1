@@ -69,6 +69,7 @@ param(
 # ============================================================
 $ErrorActionPreference = "Continue"
 $timestamp = Get-Date -Format "yyyyMMdd_HHmmss"
+$FallbackLogFile = Join-Path ([System.IO.Path]::GetTempPath()) "MEP_Gatherer_gather_fallback_${timestamp}.log"
 
 # === FIX v4.1: PROVIDER-SAFE PATH RESOLUTION ===
 # When SQLPS module is loaded, PowerShell's current location may be
@@ -104,6 +105,7 @@ if ($ServerInstance -notmatch '^(tcp:|np:|lpc:|via:|admin:)') {
     $ServerInstance = "tcp:$ServerInstance"
 }
 $LogFile = Join-Path $OutputDir "gather_sqlserver.log"
+$script:FallbackLogFile = $FallbackLogFile
 
 # ============================================================
 # FUNCIONES AUXILIARES
@@ -113,7 +115,41 @@ function Write-Log {
     $ts = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
     $line = "[$ts] [$Level] $Message"
     Write-Host $line
-    Add-Content -Path $LogFile -Value $line -Encoding UTF8 -ErrorAction SilentlyContinue
+    foreach ($target in @($LogFile, $script:FallbackLogFile) | Where-Object { $_ } | Select-Object -Unique) {
+        try {
+            Add-Content -Path $target -Value $line -Encoding UTF8 -ErrorAction Stop
+        } catch {}
+    }
+}
+
+function Finalize-Execution {
+    $env:SQLCMDPASSWORD = $null
+    try { Pop-Location } catch {}
+}
+
+function Get-PlainSqlPassword {
+    param([string]$EncodedPassword)
+
+    if (-not $EncodedPassword) { return "" }
+
+    try {
+        $bytes = [System.Convert]::FromBase64String($EncodedPassword)
+        return [System.Text.Encoding]::UTF8.GetString($bytes)
+    }
+    catch {
+        return $null
+    }
+}
+
+trap {
+    $errMessage = $_.Exception.Message
+    if (-not $errMessage) { $errMessage = "$_" }
+    Write-Log "UNHANDLED ERROR: $errMessage" "ERROR"
+    if ($_.ScriptStackTrace) {
+        Write-Log "STACK: $($_.ScriptStackTrace)" "ERROR"
+    }
+    Finalize-Execution
+    exit 1
 }
 
 function Run-Query {
@@ -180,7 +216,7 @@ function Run-Query {
                     $connParams["Password"] = $script:_credPass
                 }
             }
-            $results = Invoke-Sqlcmd @connParams
+            $results = Invoke-Sqlcmd @connParams -ErrorAction Stop
             if ($results) {
                 $lines = @()
                 foreach ($row in @($results)) {
@@ -266,7 +302,7 @@ function Run-QueryCSV {
                     $connParams["Password"] = $script:_credPass
                 }
             }
-            $results = Invoke-Sqlcmd @connParams
+            $results = Invoke-Sqlcmd @connParams -ErrorAction Stop
             if ($results) {
                 $results | Export-Csv -Path $OutFile -NoTypeInformation -Encoding UTF8
             } else {
@@ -282,6 +318,9 @@ function Run-QueryCSV {
             if ($_useWinAuth) { $sqlcmdArgs += "-E" }
             else { $sqlcmdArgs += @("-U", $script:_credUser) }
             & sqlcmd @sqlcmdArgs 2>>$LogFile
+            if ($LASTEXITCODE -ne 0) {
+                Write-Log "  [$Label] sqlcmd returned exit code $LASTEXITCODE" "ERROR"
+            }
         }
 
         $elapsed = [math]::Round(((Get-Date) - $startTime).TotalSeconds, 1)
@@ -322,8 +361,24 @@ if (-not $_useWinAuth) {
     # Accept pre-passed credentials (from launcher) or prompt interactively
     if ($SqlUser) {
         $script:_credUser = $SqlUser
-        $script:_credPass = $SqlPassword
-        Write-Log "Auth: SQL Server (credentials pre-passed)"
+        if ($SqlPassword) {
+            $script:_credPass = $SqlPassword
+            Write-Log "Auth: SQL Server (credentials pre-passed)"
+        } elseif ($env:MEP_SQLPASSWORD_B64) {
+            $script:_credPass = Get-PlainSqlPassword $env:MEP_SQLPASSWORD_B64
+            if ($null -eq $script:_credPass) {
+                Write-Log "ERROR: No se pudo decodificar la password SQL desde la variable de entorno." "ERROR"
+                Pop-Location
+                exit 1
+            }
+            Write-Log "Auth: SQL Server (password from environment)"
+        } else {
+            $secPassInput = Read-Host "Password" -AsSecureString
+            $script:_credPass = [Runtime.InteropServices.Marshal]::PtrToStringAuto(
+                [Runtime.InteropServices.Marshal]::SecureStringToBSTR($secPassInput)
+            )
+            Write-Log "Auth: SQL Server (user pre-passed, password interactive)"
+        }
     } else {
         $script:_credUser = Read-Host "Usuario SQL"
         $secPassInput = Read-Host "Password" -AsSecureString
@@ -385,7 +440,7 @@ $script:sqlMajorVersion = 10  # default to 2008
 $script:sqlVersionFull = "Unknown"
 
 if (Test-Path $versionFile) {
-    $vContent = Get-Content $versionFile -Raw
+    $vContent = [System.IO.File]::ReadAllText($versionFile)
     # Try to extract major version number
     if ($vContent -match "(\d+)\.(\d+)\.(\d+)") {
         $majorNum = [int]$Matches[1]
@@ -511,29 +566,56 @@ if ($Databases) {
         if ($_useWinAuth) { $sqlcmdArgs += "-E" }
         else { $sqlcmdArgs += @("-U", $script:_credUser) }
         & sqlcmd @sqlcmdArgs 2>>$LogFile
+        $dbSqlcmdRc = $LASTEXITCODE
 
-        $dbList = @(Get-Content $dbFile -ErrorAction SilentlyContinue |
-            Where-Object { $_.Trim() -ne "" -and $_ -notmatch "^\(" -and $_ -notmatch "rows affected" } |
-            ForEach-Object { $_.Trim() })
+        $dbLines = @(Get-Content $dbFile -ErrorAction SilentlyContinue |
+            ForEach-Object { $_.Trim() } |
+            Where-Object { $_ -ne "" })
+        $dbAccessError = $dbLines |
+            Where-Object { $_ -match "^(Sqlcmd:|Msg |Warning:|Error:)" } |
+            Select-Object -First 1
+        $dbList = @($dbLines |
+            Where-Object { $_ -notmatch "^\(" -and $_ -notmatch "rows affected" -and $_ -notmatch "^(Sqlcmd:|Msg |Warning:|Error:)" })
         Remove-Item $dbFile -ErrorAction SilentlyContinue
+        if ($dbAccessError -or ($dbSqlcmdRc -ne 0 -and $dbList.Count -eq 0)) {
+            Write-Log "ERROR CRITICO: No se pudo descubrir las bases de datos de usuario." "ERROR"
+            if ($dbAccessError) {
+                Write-Log "Detalle: $dbAccessError" "ERROR"
+            } else {
+                Write-Log "sqlcmd devolvio exit code $dbSqlcmdRc durante el descubrimiento de bases de datos." "ERROR"
+            }
+            Finalize-Execution
+            exit 1
+        }
     } else {
         # Fallback: Invoke-Sqlcmd
-        $connParams = @{ ServerInstance = $ServerInstance; Query = $dbListQuery; QueryTimeout = 120 }
-        if (-not $_useWinAuth) {
-            $cmdInfo = Get-Command Invoke-Sqlcmd
-            if ($cmdInfo.Parameters.ContainsKey('Credential')) {
-                $secPass = ConvertTo-SecureString $script:_credPass -AsPlainText -Force
-                $connParams["Credential"] = New-Object System.Management.Automation.PSCredential($script:_credUser, $secPass)
-            } else {
-                $connParams["Username"] = $script:_credUser
-                $connParams["Password"] = $script:_credPass
+        try {
+            $connParams = @{ ServerInstance = $ServerInstance; Query = $dbListQuery; QueryTimeout = 120 }
+            if (-not $_useWinAuth) {
+                $cmdInfo = Get-Command Invoke-Sqlcmd
+                if ($cmdInfo.Parameters.ContainsKey('Credential')) {
+                    $secPass = ConvertTo-SecureString $script:_credPass -AsPlainText -Force
+                    $connParams["Credential"] = New-Object System.Management.Automation.PSCredential($script:_credUser, $secPass)
+                } else {
+                    $connParams["Username"] = $script:_credUser
+                    $connParams["Password"] = $script:_credPass
+                }
             }
+            $dbResults = Invoke-Sqlcmd @connParams -ErrorAction Stop
+            $dbList = @($dbResults | ForEach-Object { $_.name })
+        } catch {
+            Write-Log "ERROR CRITICO: No se pudo descubrir las bases de datos de usuario." "ERROR"
+            Write-Log "Detalle: $_" "ERROR"
+            Finalize-Execution
+            exit 1
         }
-        $dbResults = Invoke-Sqlcmd @connParams
-        $dbList = @($dbResults | ForEach-Object { $_.name })
     }
 
     Write-Log "BDs descubiertas: $($dbList -join ', ')"
+}
+
+if ($dbList.Count -eq 0) {
+    Write-Log "WARN: No se descubrieron bases de datos de usuario accesibles." "WARN"
 }
 
 # DB summary
@@ -601,14 +683,18 @@ ORDER BY s.name;
             if ($_useWinAuth) { $sqlcmdArgs += "-E" }
             else { $sqlcmdArgs += @("-U", $script:_credUser) }
             & sqlcmd @sqlcmdArgs 2>>$LogFile
+            $schemaSqlcmdRc = $LASTEXITCODE
 
-            $_rawSchemaLines = @(Get-Content $schemaFile -ErrorAction SilentlyContinue)
-            $_dbAccessError = $_rawSchemaLines | Where-Object { $_ -match "Login failed|Cannot open database" } | Select-Object -First 1
+            $_rawSchemaLines = @(Get-Content $schemaFile -ErrorAction SilentlyContinue |
+                ForEach-Object { $_.Trim() } |
+                Where-Object { $_ -ne "" })
+            $_dbAccessError = $_rawSchemaLines |
+                Where-Object { $_ -match "^(Sqlcmd:|Msg |Warning:|Error:).*(Login failed|Cannot open database|permission was denied|does not have permission|access denied)" } |
+                Select-Object -First 1
             $schemaList = @($_rawSchemaLines |
-                Where-Object { $_.Trim() -ne "" -and $_ -notmatch "^\(" -and $_ -notmatch "rows affected" -and $_ -notmatch "^Sqlcmd:" -and $_ -notmatch "^Msg " -and $_ -notmatch "^Warning:" -and $_ -notmatch "^Error:" } |
-                ForEach-Object { $_.Trim() })
+                Where-Object { $_ -notmatch "^\(" -and $_ -notmatch "rows affected" -and $_ -notmatch "^(Sqlcmd:|Msg |Warning:|Error:)" })
             Remove-Item $schemaFile -ErrorAction SilentlyContinue
-            if ($schemaList.Count -eq 0 -and $_dbAccessError) {
+            if ($_dbAccessError -or ($schemaSqlcmdRc -ne 0 -and $schemaList.Count -eq 0)) {
                 Write-Log "  [ACCESO DENEGADO] BD '$db' omitida: la cuenta utilizada no tiene permisos sobre esta base de datos."
                 Write-Log "  [ACCESO DENEGADO] Accion requerida: otorgue acceso a la cuenta ejecutante o use 'sa' / cuenta sysadmin."
                 continue
@@ -1063,8 +1149,4 @@ Write-Log "SIGUIENTE PASO:"
 Write-Log "  Comprimir: Compress-Archive -Path '$OutputDir\*' -DestinationPath 'mep_evidence.zip'"
 Write-Log "  Entregar el .zip al equipo Stefanini"
 
-# Clean up credentials from environment
-$env:SQLCMDPASSWORD = $null
-
-# Restore original PowerShell location (balances Push-Location at script start)
-Pop-Location
+Finalize-Execution

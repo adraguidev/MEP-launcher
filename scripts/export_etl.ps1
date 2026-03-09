@@ -49,6 +49,7 @@ param(
 
 $ErrorActionPreference = "Continue"
 $timestamp = Get-Date -Format "yyyyMMdd_HHmmss"
+$FallbackLogFile = Join-Path ([System.IO.Path]::GetTempPath()) "MEP_Gatherer_etl_fallback_${timestamp}.log"
 
 # === FIX v4.1: PROVIDER-SAFE PATH RESOLUTION ===
 # When SQLPS module is loaded, PowerShell's current location may be
@@ -78,6 +79,7 @@ $OutputDir = [System.IO.Path]::GetFullPath($OutputDir)
 # Create output dir BEFORE any writes (so log file can be written)
 [System.IO.Directory]::CreateDirectory($OutputDir) | Out-Null
 $LogFile = Join-Path $OutputDir "export_etl.log"
+$script:FallbackLogFile = $FallbackLogFile
 
 # Save original ServerInstance before tcp: normalization
 # dtutil.exe does NOT accept tcp: prefix - use $_originalServerInstance for dtutil calls
@@ -97,77 +99,126 @@ function Write-Log {
     $ts = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
     $line = "[$ts] [$Level] $Message"
     Write-Host $line
-    Add-Content -Path $LogFile -Value $line -Encoding UTF8 -ErrorAction SilentlyContinue
+    foreach ($target in @($LogFile, $script:FallbackLogFile) | Where-Object { $_ } | Select-Object -Unique) {
+        try {
+            Add-Content -Path $target -Value $line -Encoding UTF8 -ErrorAction Stop
+        } catch {}
+    }
+}
+
+function Finalize-Execution {
+    $env:SQLCMDPASSWORD = $null
+    try { Pop-Location } catch {}
+}
+
+function Get-PlainSqlPassword {
+    param([string]$EncodedPassword)
+
+    if (-not $EncodedPassword) { return "" }
+
+    try {
+        $bytes = [System.Convert]::FromBase64String($EncodedPassword)
+        return [System.Text.Encoding]::UTF8.GetString($bytes)
+    }
+    catch {
+        return $null
+    }
+}
+
+trap {
+    $errMessage = $_.Exception.Message
+    if (-not $errMessage) { $errMessage = "$_" }
+    Write-Log "UNHANDLED ERROR: $errMessage" "ERROR"
+    if ($_.ScriptStackTrace) {
+        Write-Log "STACK: $($_.ScriptStackTrace)" "ERROR"
+    }
+    Finalize-Execution
+    exit 1
 }
 
 function Run-SqlQuery {
     param([string]$SQL, [string]$Database = "master")
-    if ($script:_hasSqlcmd) {
-        $sqlcmdArgs = @("-S", $ServerInstance, "-d", $Database,
-                        "-Q", $SQL, "-h", "-1", "-W", "-w", "65535", "-b")
-        if ($_useWinAuth) { $sqlcmdArgs += "-E" }
-        else { $sqlcmdArgs += @("-U", $script:_credUser) }
-        $result = & sqlcmd @sqlcmdArgs 2>>$LogFile
-        return $result
-    } else {
-        # Fallback: Invoke-Sqlcmd
-        $connParams = @{ ServerInstance = $ServerInstance; Database = $Database;
-                         Query = $SQL; QueryTimeout = 600; MaxCharLength = 1000000 }
-        if (-not $_useWinAuth) {
-            $cmdInfo = Get-Command Invoke-Sqlcmd
-            if ($cmdInfo.Parameters.ContainsKey('Credential')) {
-                $secPass = ConvertTo-SecureString $script:_credPass -AsPlainText -Force
-                $connParams["Credential"] = New-Object System.Management.Automation.PSCredential($script:_credUser, $secPass)
-            } else {
-                $connParams["Username"] = $script:_credUser
-                $connParams["Password"] = $script:_credPass
+    try {
+        if ($script:_hasSqlcmd) {
+            $sqlcmdArgs = @("-S", $ServerInstance, "-d", $Database,
+                            "-Q", $SQL, "-h", "-1", "-W", "-w", "65535", "-b")
+            if ($_useWinAuth) { $sqlcmdArgs += "-E" }
+            else { $sqlcmdArgs += @("-U", $script:_credUser) }
+            $result = & sqlcmd @sqlcmdArgs 2>>$LogFile
+            if ($LASTEXITCODE -ne 0) {
+                Write-Log "Run-SqlQuery/sqlcmd devolvio exit code $LASTEXITCODE (database=$Database)" "ERROR"
             }
+            return $result
+        } else {
+            # Fallback: Invoke-Sqlcmd
+            $connParams = @{ ServerInstance = $ServerInstance; Database = $Database;
+                             Query = $SQL; QueryTimeout = 600; MaxCharLength = 1000000 }
+            if (-not $_useWinAuth) {
+                $cmdInfo = Get-Command Invoke-Sqlcmd
+                if ($cmdInfo.Parameters.ContainsKey('Credential')) {
+                    $secPass = ConvertTo-SecureString $script:_credPass -AsPlainText -Force
+                    $connParams["Credential"] = New-Object System.Management.Automation.PSCredential($script:_credUser, $secPass)
+                } else {
+                    $connParams["Username"] = $script:_credUser
+                    $connParams["Password"] = $script:_credPass
+                }
+            }
+            $results = Invoke-Sqlcmd @connParams -ErrorAction Stop
+            # Return as plain text lines (same format as sqlcmd output)
+            if ($results) {
+                return @($results | ForEach-Object {
+                    ($_.PSObject.Properties | Where-Object { $_.MemberType -eq 'NoteProperty' } | ForEach-Object {
+                        if ($_.Value -ne $null) { [string]$_.Value } else { "" }
+                    }) -join ','
+                })
+            }
+            return @()
         }
-        $results = Invoke-Sqlcmd @connParams
-        # Return as plain text lines (same format as sqlcmd output)
-        if ($results) {
-            return @($results | ForEach-Object {
-                ($_.PSObject.Properties | Where-Object { $_.MemberType -eq 'NoteProperty' } | ForEach-Object {
-                    if ($_.Value -ne $null) { [string]$_.Value } else { "" }
-                }) -join ','
-            })
-        }
+    } catch {
+        Write-Log "Run-SqlQuery fallo en database=$Database : $_" "ERROR"
         return @()
     }
 }
 
 function Run-SqlToFile {
     param([string]$SQL, [string]$OutFile, [string]$Database = "master")
-    $dir = Split-Path $OutFile -Parent
-    if ($dir -and -not (Test-Path $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
+    try {
+        $dir = Split-Path $OutFile -Parent
+        if ($dir -and -not (Test-Path $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
 
-    # Prefer sqlcmd (uses TCP, avoids Named Pipes issues with old ODBC drivers)
-    if ($script:_hasSqlcmd) {
-        $sqlcmdArgs = @("-S", $ServerInstance, "-d", $Database,
-                        "-Q", $SQL, "-s", ",", "-W", "-w", "65535", "-o", $OutFile)
-        if ($_useWinAuth) { $sqlcmdArgs += "-E" }
-        else { $sqlcmdArgs += @("-U", $script:_credUser) }
-        & sqlcmd @sqlcmdArgs 2>>$LogFile
-    } else {
-        # Fallback: Invoke-Sqlcmd
-        $hasInvoke = $false
-        try { Get-Command Invoke-Sqlcmd -ErrorAction Stop | Out-Null; $hasInvoke = $true } catch {}
-        if ($hasInvoke) {
-            $params = @{ ServerInstance = $ServerInstance; Database = $Database;
-                         Query = $SQL; QueryTimeout = 600; MaxCharLength = 1000000 }
-            if (-not $_useWinAuth) {
-                $cmdInfo = Get-Command Invoke-Sqlcmd
-                if ($cmdInfo.Parameters.ContainsKey('Credential')) {
-                    $secPass = ConvertTo-SecureString $script:_credPass -AsPlainText -Force
-                    $params["Credential"] = New-Object System.Management.Automation.PSCredential($script:_credUser, $secPass)
-                } else {
-                    $params["Username"] = $script:_credUser
-                    $params["Password"] = $script:_credPass
-                }
+        # Prefer sqlcmd (uses TCP, avoids Named Pipes issues with old ODBC drivers)
+        if ($script:_hasSqlcmd) {
+            $sqlcmdArgs = @("-S", $ServerInstance, "-d", $Database,
+                            "-Q", $SQL, "-s", ",", "-W", "-w", "65535", "-o", $OutFile)
+            if ($_useWinAuth) { $sqlcmdArgs += "-E" }
+            else { $sqlcmdArgs += @("-U", $script:_credUser) }
+            & sqlcmd @sqlcmdArgs 2>>$LogFile
+            if ($LASTEXITCODE -ne 0) {
+                Write-Log "Run-SqlToFile/sqlcmd devolvio exit code $LASTEXITCODE (database=$Database, file=$OutFile)" "ERROR"
             }
-            $results = Invoke-Sqlcmd @params
-            if ($results) { $results | Export-Csv -Path $OutFile -NoTypeInformation -Encoding UTF8 }
+        } else {
+            # Fallback: Invoke-Sqlcmd
+            $hasInvoke = $false
+            try { Get-Command Invoke-Sqlcmd -ErrorAction Stop | Out-Null; $hasInvoke = $true } catch {}
+            if ($hasInvoke) {
+                $params = @{ ServerInstance = $ServerInstance; Database = $Database;
+                             Query = $SQL; QueryTimeout = 600; MaxCharLength = 1000000 }
+                if (-not $_useWinAuth) {
+                    $cmdInfo = Get-Command Invoke-Sqlcmd
+                    if ($cmdInfo.Parameters.ContainsKey('Credential')) {
+                        $secPass = ConvertTo-SecureString $script:_credPass -AsPlainText -Force
+                        $params["Credential"] = New-Object System.Management.Automation.PSCredential($script:_credUser, $secPass)
+                    } else {
+                        $params["Username"] = $script:_credUser
+                        $params["Password"] = $script:_credPass
+                    }
+                }
+                $results = Invoke-Sqlcmd @params -ErrorAction Stop
+                if ($results) { $results | Export-Csv -Path $OutFile -NoTypeInformation -Encoding UTF8 }
+            }
         }
+    } catch {
+        Write-Log "Run-SqlToFile fallo en database=$Database, file=$OutFile : $_" "ERROR"
     }
 }
 
@@ -434,8 +485,23 @@ if (-not $_useWinAuth) {
     # Accept pre-passed credentials (from launcher) or prompt interactively
     if ($SqlUser) {
         $script:_credUser = $SqlUser
-        $script:_credPass = $SqlPassword
-        Write-Log "Auth: SQL Server (credentials pre-passed)"
+        if ($SqlPassword) {
+            $script:_credPass = $SqlPassword
+            Write-Log "Auth: SQL Server (credentials pre-passed)"
+        } elseif ($env:MEP_SQLPASSWORD_B64) {
+            $script:_credPass = Get-PlainSqlPassword $env:MEP_SQLPASSWORD_B64
+            if ($null -eq $script:_credPass) {
+                Write-Log "ERROR: No se pudo decodificar la password SQL desde la variable de entorno." "ERROR"
+                Pop-Location
+                exit 1
+            }
+            Write-Log "Auth: SQL Server (password from environment)"
+        } else {
+            $secP = Read-Host "Password" -AsSecureString
+            $script:_credPass = [Runtime.InteropServices.Marshal]::PtrToStringAuto(
+                [Runtime.InteropServices.Marshal]::SecureStringToBSTR($secP))
+            Write-Log "Auth: SQL Server (user pre-passed, password interactive)"
+        }
     } else {
         $script:_credUser = Read-Host "Usuario SQL"
         $secP = Read-Host "Password" -AsSecureString
@@ -631,6 +697,7 @@ ORDER BY f.name, p.name;
                 [System.IO.Compression.ZipFile]::ExtractToDirectory($ispacPath, $projDir)
                 Write-Log "    Unzipped .ispac -> .dtsx files"
             } catch {
+                Write-Log "    ZipFile extraction fallo, intentando Shell.Application fallback: $_" "WARN"
                 # Fallback for older PS
                 $shell = New-Object -ComObject Shell.Application
                 $zip = $shell.Namespace($ispacPath)
@@ -642,7 +709,7 @@ ORDER BY f.name, p.name;
             Remove-Item $ispacPath -ErrorAction SilentlyContinue
             $exported = $true
         } catch {
-            Write-Log "    .NET assembly not available, using T-SQL fallback" "WARN"
+            Write-Log "    .NET assembly export fallo, usando fallback T-SQL: $_" "WARN"
         }
 
         if (-not $exported) {
@@ -672,6 +739,7 @@ ORDER BY f.name, p.name;
                         Add-Type -AssemblyName System.IO.Compression.FileSystem -ErrorAction SilentlyContinue
                         [System.IO.Compression.ZipFile]::ExtractToDirectory($tmpIspac, $projDir)
                     } catch {
+                        Write-Log "    ZipFile extraction del fallback fallo, intentando Shell.Application: $_" "WARN"
                         $shell = New-Object -ComObject Shell.Application
                         $zip = $shell.Namespace($tmpIspac)
                         $dest = $shell.Namespace($projDir)
@@ -768,14 +836,15 @@ ORDER BY f.foldername, p.name;
 "@ (Join-Path $msdbDir "inventory.csv")
 
     # Export each package as XML using dtutil (if available)
-    # Prefer newest dtutil version (160, 150, 140, 130) to avoid Express edition limitations
+    # Prefer newest dtutil version available, but include legacy versions for
+    # SQL Server 2014/2012/2008 R2 hosts where dtutil is installed outside PATH.
     # Search both Program Files and Program Files (x86) for 32-bit SQL installs
     $hasDtutil = $false
     $dtutilPath = $null
     $pfDirs = @($env:ProgramFiles)
     $pf86 = ${env:ProgramFiles(x86)}
     if ($pf86 -and $pf86 -ne $env:ProgramFiles) { $pfDirs += $pf86 }
-    :dtutil_search foreach ($ver in @(160, 150, 140, 130)) {
+    :dtutil_search foreach ($ver in @(160, 150, 140, 130, 120, 110, 100)) {
         foreach ($pfDir in $pfDirs) {
             $candidate = Join-Path $pfDir "Microsoft SQL Server\$ver\DTS\Binn\dtutil.exe"
             if (Test-Path $candidate) {
@@ -792,7 +861,9 @@ ORDER BY f.foldername, p.name;
             # .Source is PS5+; .Definition is the PS4-safe path property
             $dtutilPath = if ($dtutilCmd.Source) { $dtutilCmd.Source } else { $dtutilCmd.Definition }
             if ($dtutilPath) { $hasDtutil = $true }
-        } catch {}
+        } catch {
+            Write-Log "  No se pudo localizar dtutil en PATH: $_" "WARN"
+        }
     }
 
     if ($hasDtutil) {
@@ -820,6 +891,7 @@ ORDER BY f.foldername, p.name;
             } else {
                 & "$dtutilPath" /SQL "$pkg" /COPY "FILE;$destFile" /SourceServer "$_originalServerInstance" /SourceUser "$($script:_credUser)" /SourcePassword "$($script:_credPass)" /Quiet 2>>$LogFile
             }
+            $dtutilRc = $LASTEXITCODE
             if (Test-Path $destFile) {
                 # Sanitize
                 $content = [System.IO.File]::ReadAllText($destFile, [System.Text.Encoding]::UTF8)
@@ -830,6 +902,10 @@ ORDER BY f.foldername, p.name;
 
                 $extractDir = Join-Path $msdbDir "_extracted"
                 Extract-DtsxMetadata -DtsxPath $destFile -ExtractDir $extractDir
+            } elseif ($dtutilRc -ne 0) {
+                Write-Log "  dtutil fallo para paquete '$pkg' con exit code $dtutilRc" "WARN"
+            } else {
+                Write-Log "  dtutil no genero archivo para paquete '$pkg'" "WARN"
             }
         }
     } else {
@@ -997,7 +1073,12 @@ $foundFiles = @()
 
 foreach ($searchPath in $searchList) {
     if (-not (Test-Path $searchPath -ErrorAction SilentlyContinue)) { continue }
-    $files = Get-ChildItem -Path $searchPath -Include "*.dtsx","*.dtsConfig","*.params" -Recurse -ErrorAction SilentlyContinue
+    try {
+        $files = Get-ChildItem -Path $searchPath -Include "*.dtsx","*.dtsConfig","*.params" -Recurse -ErrorAction Stop
+    } catch {
+        Write-Log "  No se pudo escanear la ruta '$searchPath': $_" "WARN"
+        continue
+    }
     if ($files) {
         Write-Log "  Encontrados $($files.Count) archivos en: $searchPath"
         $foundFiles += $files
@@ -1016,7 +1097,11 @@ if ($foundFiles.Count -gt 0) {
 
         # Copy and sanitize
         $content = $null
-        try { $content = [System.IO.File]::ReadAllText($file.FullName, [System.Text.Encoding]::UTF8) } catch {}
+        try {
+            $content = [System.IO.File]::ReadAllText($file.FullName, [System.Text.Encoding]::UTF8)
+        } catch {
+            Write-Log "  No se pudo leer archivo '$($file.FullName)': $_" "WARN"
+        }
         if ($content) {
             (Sanitize-Content $content) | Out-File -FilePath $destPath -Encoding UTF8
             Write-Log "  Copied: $($file.FullName) -> $relPath"
@@ -1037,10 +1122,19 @@ $configPaths = @(
     "$env:ProgramData\SSIS\*"
 )
 foreach ($cp in $configPaths) {
-    $configs = Get-ChildItem -Path $cp -Include "*.dtsConfig","*.config" -Recurse -ErrorAction SilentlyContinue
+    try {
+        $configs = Get-ChildItem -Path $cp -Include "*.dtsConfig","*.config" -Recurse -ErrorAction Stop
+    } catch {
+        Write-Log "  No se pudo escanear configs en '$cp': $_" "WARN"
+        continue
+    }
     foreach ($cfg in $configs) {
         $content = $null
-        try { $content = [System.IO.File]::ReadAllText($cfg.FullName, [System.Text.Encoding]::UTF8) } catch {}
+        try {
+            $content = [System.IO.File]::ReadAllText($cfg.FullName, [System.Text.Encoding]::UTF8)
+        } catch {
+            Write-Log "  No se pudo leer config '$($cfg.FullName)': $_" "WARN"
+        }
         if ($content -and $content -match '(?i)SSIS|DTS|ConnectionString') {
             $destPath = Join-Path $fsDir "Configs\$($cfg.Name)"
             New-Item -ItemType Directory -Path (Split-Path $destPath -Parent) -Force | Out-Null
@@ -1083,8 +1177,4 @@ Write-Log ""
 Write-Log "SIGUIENTE PASO:"
 Write-Log "  Comprimir: Compress-Archive -Path '$OutputDir\*' -DestinationPath 'etl_evidence.zip'"
 
-# Clean up credentials from environment
-$env:SQLCMDPASSWORD = $null
-
-# Restore original PowerShell location (balances Push-Location at script start)
-Pop-Location
+Finalize-Execution
