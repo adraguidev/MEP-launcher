@@ -648,7 +648,9 @@ ORDER BY f.name, p.name;
                 $cmd.CommandText = "EXEC [catalog].get_project @folder_name=N'$folderName', @project_name=N'$projectName'"
                 $reader = $cmd.ExecuteReader()
                 if ($reader.Read()) {
-                    $bytes = [byte[]]::new($reader.GetBytes(0, 0, $null, 0, 0))
+                    # [byte[]]::new() requires PS5+; use New-Object for PS3/PS4 compat (WS2012R2)
+                    $byteCount = $reader.GetBytes(0, 0, $null, 0, 0)
+                    $bytes = New-Object byte[] $byteCount
                     $reader.GetBytes(0, 0, $bytes, 0, $bytes.Length)
                     [System.IO.File]::WriteAllBytes($tmpIspac, $bytes)
                     Write-Log "    Exported via catalog.get_project"
@@ -753,20 +755,31 @@ ORDER BY f.foldername, p.name;
 "@ (Join-Path $msdbDir "inventory.csv")
 
     # Export each package as XML using dtutil (if available)
-    # Prefer newest dtutil version (150, 160, 140, 130) to avoid Express edition limitations
+    # Prefer newest dtutil version (160, 150, 140, 130) to avoid Express edition limitations
+    # Search both Program Files and Program Files (x86) for 32-bit SQL installs
     $hasDtutil = $false
     $dtutilPath = $null
-    foreach ($ver in @(160, 150, 140, 130)) {
-        $candidate = Join-Path $env:ProgramFiles "Microsoft SQL Server\$ver\DTS\Binn\dtutil.exe"
-        if (Test-Path $candidate) {
-            $dtutilPath = $candidate
-            $hasDtutil = $true
-            Write-Log "  Usando dtutil v$ver : $candidate"
-            break
+    $pfDirs = @($env:ProgramFiles)
+    $pf86 = ${env:ProgramFiles(x86)}
+    if ($pf86 -and $pf86 -ne $env:ProgramFiles) { $pfDirs += $pf86 }
+    :dtutil_search foreach ($ver in @(160, 150, 140, 130)) {
+        foreach ($pfDir in $pfDirs) {
+            $candidate = Join-Path $pfDir "Microsoft SQL Server\$ver\DTS\Binn\dtutil.exe"
+            if (Test-Path $candidate) {
+                $dtutilPath = $candidate
+                $hasDtutil = $true
+                Write-Log "  Usando dtutil v$ver : $candidate"
+                break dtutil_search
+            }
         }
     }
     if (-not $hasDtutil) {
-        try { $dtutilPath = (Get-Command dtutil -ErrorAction Stop).Source; $hasDtutil = $true } catch {}
+        try {
+            $dtutilCmd = Get-Command dtutil -ErrorAction Stop
+            # .Source is PS5+; .Definition is the PS4-safe path property
+            $dtutilPath = if ($dtutilCmd.Source) { $dtutilCmd.Source } else { $dtutilCmd.Definition }
+            if ($dtutilPath) { $hasDtutil = $true }
+        } catch {}
     }
 
     if ($hasDtutil) {
@@ -787,7 +800,7 @@ ORDER BY f.foldername, p.name;
             if (-not $safeName) { continue }
             $destFile = Join-Path $msdbDir "$safeName.dtsx"
 
-            & $dtutilPath /SQL "$pkg" /COPY "FILE;$destFile" /SourceServer $ServerInstance /Quiet 2>>$LogFile
+            & "$dtutilPath" /SQL "$pkg" /COPY "FILE;$destFile" /SourceServer $ServerInstance /Quiet 2>>$LogFile
             if (Test-Path $destFile) {
                 # Sanitize
                 $content = Get-Content $destFile -Raw -Encoding UTF8

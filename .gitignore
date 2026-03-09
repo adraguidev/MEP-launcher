@@ -20,3 +20,11 @@ Thumbs.db
 mep_scripts/
 mep_sqlserver_*/
 mep_etl_*/
+
+# Subdirectory gatherers (managed in their own repos)
+cloudera-gatherer/
+cosmos-gatherer/
+teradata-gatherer/
+
+# Claude Code
+.claude/
