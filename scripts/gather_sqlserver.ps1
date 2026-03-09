@@ -202,7 +202,12 @@ function Run-Query {
         }
     }
     catch {
-        Write-Log "  [$Label] ERROR: $_" "ERROR"
+        $_msg = "$_"
+        if ($_msg -match "permission was denied|does not have permission|Login failed|Cannot open database|access denied") {
+            Write-Log "  [$Label] PERMISO DENEGADO: la cuenta no tiene acceso suficiente para esta consulta. No es un error del script." "ERROR"
+        } else {
+            Write-Log "  [$Label] ERROR: $_msg" "ERROR"
+        }
     }
 }
 
@@ -287,7 +292,12 @@ function Run-QueryCSV {
         }
     }
     catch {
-        Write-Log "  [$Label] ERROR: $_" "ERROR"
+        $_msg = "$_"
+        if ($_msg -match "permission was denied|does not have permission|Login failed|Cannot open database|access denied") {
+            Write-Log "  [$Label] PERMISO DENEGADO: la cuenta no tiene acceso suficiente para esta consulta. No es un error del script." "ERROR"
+        } else {
+            Write-Log "  [$Label] ERROR: $_msg" "ERROR"
+        }
     }
 }
 
@@ -599,7 +609,8 @@ ORDER BY s.name;
                 ForEach-Object { $_.Trim() })
             Remove-Item $schemaFile -ErrorAction SilentlyContinue
             if ($schemaList.Count -eq 0 -and $_dbAccessError) {
-                Write-Log "  [WARN] BD $db`: sin acceso (Login failed). Saltando."
+                Write-Log "  [ACCESO DENEGADO] BD '$db' omitida: la cuenta utilizada no tiene permisos sobre esta base de datos."
+                Write-Log "  [ACCESO DENEGADO] Accion requerida: otorgue acceso a la cuenta ejecutante o use 'sa' / cuenta sysadmin."
                 continue
             }
         } else {
@@ -619,7 +630,8 @@ ORDER BY s.name;
                 $schemaResults = Invoke-Sqlcmd @connParams -ErrorAction Stop
                 $schemaList = @($schemaResults | ForEach-Object { $_.name })
             } catch {
-                Write-Log "  [WARN] BD $db`: sin acceso ($($_.Exception.Message -replace '\r?\n',' ')). Saltando."
+                Write-Log "  [ACCESO DENEGADO] BD '$db' omitida: la cuenta utilizada no tiene permisos sobre esta base de datos."
+                Write-Log "  [ACCESO DENEGADO] Accion requerida: otorgue acceso a la cuenta ejecutante o use 'sa' / cuenta sysadmin."
                 continue
             }
         }
