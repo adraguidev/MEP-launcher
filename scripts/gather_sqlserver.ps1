@@ -592,10 +592,16 @@ ORDER BY s.name;
             else { $sqlcmdArgs += @("-U", $script:_credUser) }
             & sqlcmd @sqlcmdArgs 2>>$LogFile
 
-            $schemaList = @(Get-Content $schemaFile -ErrorAction SilentlyContinue |
-                Where-Object { $_.Trim() -ne "" -and $_ -notmatch "^\(" -and $_ -notmatch "rows affected" } |
+            $_rawSchemaLines = @(Get-Content $schemaFile -ErrorAction SilentlyContinue)
+            $_dbAccessError = $_rawSchemaLines | Where-Object { $_ -match "Login failed|Cannot open database" } | Select-Object -First 1
+            $schemaList = @($_rawSchemaLines |
+                Where-Object { $_.Trim() -ne "" -and $_ -notmatch "^\(" -and $_ -notmatch "rows affected" -and $_ -notmatch "^Sqlcmd:" -and $_ -notmatch "^Msg " -and $_ -notmatch "^Warning:" -and $_ -notmatch "^Error:" } |
                 ForEach-Object { $_.Trim() })
             Remove-Item $schemaFile -ErrorAction SilentlyContinue
+            if ($schemaList.Count -eq 0 -and $_dbAccessError) {
+                Write-Log "  [WARN] BD $db`: sin acceso (Login failed). Saltando."
+                continue
+            }
         } else {
             # Fallback: Invoke-Sqlcmd
             $connParams = @{ ServerInstance = $ServerInstance; Database = $db; Query = $schemaQuery; QueryTimeout = 120 }
@@ -609,8 +615,13 @@ ORDER BY s.name;
                     $connParams["Password"] = $script:_credPass
                 }
             }
-            $schemaResults = Invoke-Sqlcmd @connParams
-            $schemaList = @($schemaResults | ForEach-Object { $_.name })
+            try {
+                $schemaResults = Invoke-Sqlcmd @connParams -ErrorAction Stop
+                $schemaList = @($schemaResults | ForEach-Object { $_.name })
+            } catch {
+                Write-Log "  [WARN] BD $db`: sin acceso ($($_.Exception.Message -replace '\r?\n',' ')). Saltando."
+                continue
+            }
         }
 
         Write-Log "  Schemas descubiertos: $($schemaList -join ', ')"
