@@ -58,7 +58,7 @@ $timestamp = Get-Date -Format "yyyyMMdd_HHmmss"
 $_scriptDir = $null
 if ($PSScriptRoot) { $_scriptDir = $PSScriptRoot }
 elseif ($MyInvocation.MyCommand.Path) { $_scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path -ErrorAction SilentlyContinue }
-if (-not $_scriptDir -or $_scriptDir -notmatch '^[A-Za-z]:\\') {
+if (-not $_scriptDir -or ($_scriptDir -notmatch '^[A-Za-z]:\\' -and $_scriptDir -notmatch '^\\\\')) {
     $_scriptDir = [System.IO.Directory]::GetCurrentDirectory()
 }
 # Ensure we're on a filesystem provider for all relative operations
@@ -79,6 +79,10 @@ $OutputDir = [System.IO.Path]::GetFullPath($OutputDir)
 [System.IO.Directory]::CreateDirectory($OutputDir) | Out-Null
 $LogFile = Join-Path $OutputDir "export_etl.log"
 
+# Save original ServerInstance before tcp: normalization
+# dtutil.exe does NOT accept tcp: prefix - use $_originalServerInstance for dtutil calls
+$_originalServerInstance = $ServerInstance
+
 # Force TCP protocol so ODBC Driver 11 doesn't fall back to Named Pipes
 # (Named Pipes fails on remote connections and some local configurations)
 if ($ServerInstance -notmatch '^(tcp:|np:|lpc:|via:|admin:)') {
@@ -93,7 +97,7 @@ function Write-Log {
     $ts = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
     $line = "[$ts] [$Level] $Message"
     Write-Host $line
-    Add-Content -Path $LogFile -Value $line -ErrorAction SilentlyContinue
+    Add-Content -Path $LogFile -Value $line -Encoding UTF8 -ErrorAction SilentlyContinue
 }
 
 function Run-SqlQuery {
@@ -123,7 +127,9 @@ function Run-SqlQuery {
         # Return as plain text lines (same format as sqlcmd output)
         if ($results) {
             return @($results | ForEach-Object {
-                ($_.PSObject.Properties | ForEach-Object { $_.Value }) -join ','
+                ($_.PSObject.Properties | Where-Object { $_.MemberType -eq 'NoteProperty' } | ForEach-Object {
+                    if ($_.Value -ne $null) { [string]$_.Value } else { "" }
+                }) -join ','
             })
         }
         return @()
@@ -291,7 +297,7 @@ function Extract-DtsxMetadata {
     }
 
     # Also scan raw text for common SQL patterns buried in CDATA or element text
-    $rawText = Get-Content $DtsxPath -Raw -Encoding UTF8
+    $rawText = [System.IO.File]::ReadAllText($DtsxPath, [System.Text.Encoding]::UTF8)
     $cdataMatches = [regex]::Matches($rawText, '<!\[CDATA\[([\s\S]*?)\]\]>')
     foreach ($m in $cdataMatches) {
         $content = $m.Groups[1].Value.Trim()
@@ -306,7 +312,7 @@ function Extract-DtsxMetadata {
     if ($sqlCount -eq 0) {
         $sqlLines += "-- (No embedded SQL statements found in this package)"
     }
-    ($sqlLines -join "`n") | Out-File -FilePath $sqlFile -Encoding UTF8
+    ($sqlLines -join "`r`n") | Out-File -FilePath $sqlFile -Encoding UTF8
     Write-Log "    Extracted: SQL statements ($($sqlCount) found)"
 
     # --- 3. Script Tasks (C#/VB code) ---
@@ -349,7 +355,7 @@ function Extract-DtsxMetadata {
     }
 
     if ($scriptCount -gt 0) {
-        ($scriptLines -join "`n") | Out-File -FilePath $scriptFile -Encoding UTF8
+        ($scriptLines -join "`r`n") | Out-File -FilePath $scriptFile -Encoding UTF8
         Write-Log "    Extracted: script tasks ($($scriptCount) found)"
     }
 
@@ -403,7 +409,7 @@ function Extract-DtsxMetadata {
     }
 
     if ($dfCount -gt 0) {
-        ($dfLines -join "`n") | Out-File -FilePath $dfFile -Encoding UTF8
+        ($dfLines -join "`r`n") | Out-File -FilePath $dfFile -Encoding UTF8
     }
     Write-Log "    Extracted: dataflow components ($($dfCount) found)"
 }
@@ -423,7 +429,7 @@ Write-Log "============================================================"
 # Credentials
 $script:_credUser = ""
 $script:_credPass = ""
-$_useWinAuth = $UseWindowsAuth -notin @("false","0","$false","no")
+$_useWinAuth = -not (@("false","0","False","no") -contains $UseWindowsAuth)
 if (-not $_useWinAuth) {
     # Accept pre-passed credentials (from launcher) or prompt interactively
     if ($SqlUser) {
@@ -705,7 +711,7 @@ ORDER BY p.name;
         # Sanitize all .dtsx files
         $dtsxFiles = Get-ChildItem -Path $projDir -Filter "*.dtsx" -ErrorAction SilentlyContinue
         foreach ($dtsx in $dtsxFiles) {
-            $content = Get-Content $dtsx.FullName -Raw -Encoding UTF8
+            $content = [System.IO.File]::ReadAllText($dtsx.FullName, [System.Text.Encoding]::UTF8)
             $sanitized = Sanitize-Content $content
             $sanitized | Out-File -FilePath $dtsx.FullName -Encoding UTF8
 
@@ -719,7 +725,7 @@ ORDER BY p.name;
         # Also handle .params files
         $paramFiles = Get-ChildItem -Path $projDir -Filter "*.params" -ErrorAction SilentlyContinue
         foreach ($pf in $paramFiles) {
-            $content = Get-Content $pf.FullName -Raw -Encoding UTF8
+            $content = [System.IO.File]::ReadAllText($pf.FullName, [System.Text.Encoding]::UTF8)
             $sanitized = Sanitize-Content $content
             $sanitized | Out-File -FilePath $pf.FullName -Encoding UTF8
             Write-Log "    Params: $($pf.Name)"
@@ -807,10 +813,16 @@ ORDER BY f.foldername, p.name;
             if (-not $safeName) { continue }
             $destFile = Join-Path $msdbDir "$safeName.dtsx"
 
-            & "$dtutilPath" /SQL "$pkg" /COPY "FILE;$destFile" /SourceServer $ServerInstance /Quiet 2>>$LogFile
+            # dtutil does not accept tcp: prefix - use original ServerInstance
+            # Pass SQL credentials explicitly when not using Windows auth
+            if ($_useWinAuth) {
+                & "$dtutilPath" /SQL "$pkg" /COPY "FILE;$destFile" /SourceServer "$_originalServerInstance" /Quiet 2>>$LogFile
+            } else {
+                & "$dtutilPath" /SQL "$pkg" /COPY "FILE;$destFile" /SourceServer "$_originalServerInstance" /SourceUser "$($script:_credUser)" /SourcePassword "$($script:_credPass)" /Quiet 2>>$LogFile
+            }
             if (Test-Path $destFile) {
                 # Sanitize
-                $content = Get-Content $destFile -Raw -Encoding UTF8
+                $content = [System.IO.File]::ReadAllText($destFile, [System.Text.Encoding]::UTF8)
                 (Sanitize-Content $content) | Out-File -FilePath $destFile -Encoding UTF8
 
                 $totalPackages++
@@ -926,7 +938,7 @@ foreach ($line in $tsqlSteps) {
         $tsqlLines += ""
     }
 }
-($tsqlLines -join "`n") | Out-File -FilePath $tsqlStepsFile -Encoding UTF8
+($tsqlLines -join "`r`n") | Out-File -FilePath $tsqlStepsFile -Encoding UTF8
 Write-Log "  T-SQL job steps exportados"
 
 # CmdExec / PowerShell job steps (BAT/PS1 commands)
@@ -1003,7 +1015,8 @@ if ($foundFiles.Count -gt 0) {
         New-Item -ItemType Directory -Path $destDir -Force | Out-Null
 
         # Copy and sanitize
-        $content = Get-Content $file.FullName -Raw -Encoding UTF8 -ErrorAction SilentlyContinue
+        $content = $null
+        try { $content = [System.IO.File]::ReadAllText($file.FullName, [System.Text.Encoding]::UTF8) } catch {}
         if ($content) {
             (Sanitize-Content $content) | Out-File -FilePath $destPath -Encoding UTF8
             Write-Log "  Copied: $($file.FullName) -> $relPath"
@@ -1026,7 +1039,8 @@ $configPaths = @(
 foreach ($cp in $configPaths) {
     $configs = Get-ChildItem -Path $cp -Include "*.dtsConfig","*.config" -Recurse -ErrorAction SilentlyContinue
     foreach ($cfg in $configs) {
-        $content = Get-Content $cfg.FullName -Raw -Encoding UTF8 -ErrorAction SilentlyContinue
+        $content = $null
+        try { $content = [System.IO.File]::ReadAllText($cfg.FullName, [System.Text.Encoding]::UTF8) } catch {}
         if ($content -and $content -match '(?i)SSIS|DTS|ConnectionString') {
             $destPath = Join-Path $fsDir "Configs\$($cfg.Name)"
             New-Item -ItemType Directory -Path (Split-Path $destPath -Parent) -Force | Out-Null
@@ -1049,10 +1063,10 @@ Write-Log "Paquetes SSIS exportados: $totalPackages"
 Write-Log ""
 
 # Count extracted artifacts
-$extractedSql = (Get-ChildItem -Path $OutputDir -Filter "*_sql_tasks.sql" -Recurse -ErrorAction SilentlyContinue).Count
-$extractedConn = (Get-ChildItem -Path $OutputDir -Filter "*_connections.txt" -Recurse -ErrorAction SilentlyContinue).Count
-$extractedDF = (Get-ChildItem -Path $OutputDir -Filter "*_dataflows.txt" -Recurse -ErrorAction SilentlyContinue).Count
-$extractedScript = (Get-ChildItem -Path $OutputDir -Filter "*_script_tasks.txt" -Recurse -ErrorAction SilentlyContinue).Count
+$extractedSql = @(Get-ChildItem -Path $OutputDir -Filter "*_sql_tasks.sql" -Recurse -ErrorAction SilentlyContinue).Count
+$extractedConn = @(Get-ChildItem -Path $OutputDir -Filter "*_connections.txt" -Recurse -ErrorAction SilentlyContinue).Count
+$extractedDF = @(Get-ChildItem -Path $OutputDir -Filter "*_dataflows.txt" -Recurse -ErrorAction SilentlyContinue).Count
+$extractedScript = @(Get-ChildItem -Path $OutputDir -Filter "*_script_tasks.txt" -Recurse -ErrorAction SilentlyContinue).Count
 
 Write-Log "Artefactos extraidos para analisis LLM:"
 Write-Log "  SQL embebido:        $extractedSql archivos"
@@ -1061,7 +1075,7 @@ Write-Log "  Data flow summaries:  $extractedDF archivos"
 Write-Log "  Script tasks:         $extractedScript archivos"
 Write-Log ""
 
-$allFiles = Get-ChildItem -Path $OutputDir -Recurse -File
+$allFiles = @(Get-ChildItem -Path $OutputDir -Recurse | Where-Object { -not $_.PSIsContainer })
 $totalSize = [math]::Round(($allFiles | Measure-Object -Property Length -Sum).Sum / 1MB, 2)
 Write-Log "Total archivos: $($allFiles.Count)"
 Write-Log "Tamano total:   $totalSize MB (100% texto/XML)"

@@ -46,7 +46,7 @@ if %errorlevel% neq 0 (
 
     powershell -Command "Start-Process cmd -ArgumentList '/c \"%~f0\"' -Verb RunAs" >nul 2>&1
 
-    if %errorlevel% neq 0 (
+    if !errorlevel! neq 0 (
 
         echo.
 
@@ -200,7 +200,7 @@ echo   [OK] PowerShell !PS_MAJOR!.x detectado
 
 
 
-if "!PS_MAJOR!" LSS "3" (
+if !PS_MAJOR! LSS 3 (
 
     echo   [WARN] PowerShell !PS_MAJOR!.x es muy antiguo. Se recomienda 3.0+.
 
@@ -276,7 +276,7 @@ if %INST_COUNT% gtr 0 (
 
     if !INST_NUM! geq 1 if !INST_NUM! leq %INST_COUNT% (
 
-        set "SERVER_INSTANCE=!INST_!INST_NUM!!"
+        call set "SERVER_INSTANCE=%%INST_!INST_NUM!%%"
 
         goto got_instance
 
@@ -662,7 +662,15 @@ if "%USE_WIN_AUTH%"=="true" (
 
     if not "%CUSTOM_DBS%"=="" (
 
-        powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%GATHER_PS1%" -ServerInstance "%SERVER_INSTANCE%" -UseWindowsAuth false -SqlUser "%SQL_USER%" -SqlPassword "%SQL_PASS%" -Databases "%CUSTOM_DBS%"
+        if not "%CUSTOM_SCHEMAS%"=="" (
+
+            powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%GATHER_PS1%" -ServerInstance "%SERVER_INSTANCE%" -UseWindowsAuth false -SqlUser "%SQL_USER%" -SqlPassword "%SQL_PASS%" -Databases "%CUSTOM_DBS%" -Schemas "%CUSTOM_SCHEMAS%"
+
+        ) else (
+
+            powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%GATHER_PS1%" -ServerInstance "%SERVER_INSTANCE%" -UseWindowsAuth false -SqlUser "%SQL_USER%" -SqlPassword "%SQL_PASS%" -Databases "%CUSTOM_DBS%"
+
+        )
 
     ) else (
 

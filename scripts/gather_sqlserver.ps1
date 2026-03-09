@@ -78,7 +78,7 @@ $timestamp = Get-Date -Format "yyyyMMdd_HHmmss"
 $_scriptDir = $null
 if ($PSScriptRoot) { $_scriptDir = $PSScriptRoot }
 elseif ($MyInvocation.MyCommand.Path) { $_scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path -ErrorAction SilentlyContinue }
-if (-not $_scriptDir -or $_scriptDir -notmatch '^[A-Za-z]:\\') {
+if (-not $_scriptDir -or ($_scriptDir -notmatch '^[A-Za-z]:\\' -and $_scriptDir -notmatch '^\\\\')) {
     $_scriptDir = [System.IO.Directory]::GetCurrentDirectory()
 }
 # Ensure we're on a filesystem provider for all relative operations
@@ -113,7 +113,7 @@ function Write-Log {
     $ts = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
     $line = "[$ts] [$Level] $Message"
     Write-Host $line
-    Add-Content -Path $LogFile -Value $line -ErrorAction SilentlyContinue
+    Add-Content -Path $LogFile -Value $line -Encoding UTF8 -ErrorAction SilentlyContinue
 }
 
 function Run-Query {
@@ -182,7 +182,13 @@ function Run-Query {
             }
             $results = Invoke-Sqlcmd @connParams
             if ($results) {
-                ($results | Format-Table -HideTableHeaders -AutoSize | Out-String).Trim() | Out-File $OutFile -Encoding UTF8
+                $lines = @()
+                foreach ($row in @($results)) {
+                    $lines += ($row.PSObject.Properties | Where-Object { $_.MemberType -eq 'NoteProperty' } | ForEach-Object {
+                        if ($_.Value -ne $null) { [string]$_.Value } else { "" }
+                    }) -join ","
+                }
+                $lines | Out-File $OutFile -Encoding UTF8
             }
         }
 
@@ -301,7 +307,7 @@ Write-Log "============================================================"
 # --- Credentials ---
 $script:_credUser = ""
 $script:_credPass = ""
-$_useWinAuth = $UseWindowsAuth -notin @("false","0","$false","no")
+$_useWinAuth = -not (@("false","0","False","no") -contains $UseWindowsAuth)
 if (-not $_useWinAuth) {
     # Accept pre-passed credentials (from launcher) or prompt interactively
     if ($SqlUser) {
@@ -394,6 +400,14 @@ Write-Log ""
 Write-Log "=== FASE 1: Informacion de instancia ==="
 $instDir = Join-Path $OutputDir "_instance"
 
+# Memory expression: physical_memory_kb was added in SQL 2012 (v11)
+# SQL 2008 R2 (v10) uses physical_memory_in_bytes
+$_memExpr = if ($script:sqlMajorVersion -ge 11) {
+    '(SELECT physical_memory_kb/1024 FROM sys.dm_os_sys_info) AS memory_mb'
+} else {
+    '(SELECT CAST(physical_memory_in_bytes/1048576 AS BIGINT) FROM sys.dm_os_sys_info) AS memory_mb'
+}
+
 # Instance config
 Run-QueryCSV "Server Config" @"
 SET NOCOUNT ON;
@@ -411,7 +425,7 @@ SELECT
     SERVERPROPERTY('IsFullTextInstalled') AS fulltext,
     (SELECT COUNT(*) FROM sys.databases WHERE database_id > 4) AS user_db_count,
     (SELECT sqlserver_start_time FROM sys.dm_os_sys_info) AS start_time,
-    (SELECT physical_memory_kb/1024 FROM sys.dm_os_sys_info) AS memory_mb,
+    $_memExpr,
     (SELECT cpu_count FROM sys.dm_os_sys_info) AS cpu_count;
 "@ (Join-Path $instDir "01_server_config.csv")
 
@@ -488,9 +502,9 @@ if ($Databases) {
         else { $sqlcmdArgs += @("-U", $script:_credUser) }
         & sqlcmd @sqlcmdArgs 2>>$LogFile
 
-        $dbList = Get-Content $dbFile -ErrorAction SilentlyContinue |
+        $dbList = @(Get-Content $dbFile -ErrorAction SilentlyContinue |
             Where-Object { $_.Trim() -ne "" -and $_ -notmatch "^\(" -and $_ -notmatch "rows affected" } |
-            ForEach-Object { $_.Trim() }
+            ForEach-Object { $_.Trim() })
         Remove-Item $dbFile -ErrorAction SilentlyContinue
     } else {
         # Fallback: Invoke-Sqlcmd
@@ -533,6 +547,13 @@ ORDER BY d.name;
 $dbCount = 0
 $totalSchemas = 0
 
+# authentication_type_desc was added in SQL 2012 (v11); not available in 2008 R2
+$_authTypeCol = if ($script:sqlMajorVersion -ge 11) {
+    "dp.authentication_type_desc"
+} else {
+    "'N/A' AS authentication_type_desc"
+}
+
 foreach ($db in $dbList) {
 
     $dbCount++
@@ -571,9 +592,9 @@ ORDER BY s.name;
             else { $sqlcmdArgs += @("-U", $script:_credUser) }
             & sqlcmd @sqlcmdArgs 2>>$LogFile
 
-            $schemaList = Get-Content $schemaFile -ErrorAction SilentlyContinue |
+            $schemaList = @(Get-Content $schemaFile -ErrorAction SilentlyContinue |
                 Where-Object { $_.Trim() -ne "" -and $_ -notmatch "^\(" -and $_ -notmatch "rows affected" } |
-                ForEach-Object { $_.Trim() }
+                ForEach-Object { $_.Trim() })
             Remove-Item $schemaFile -ErrorAction SilentlyContinue
         } else {
             # Fallback: Invoke-Sqlcmd
@@ -608,7 +629,7 @@ SET NOCOUNT ON;
 SELECT
     dp.name, dp.type_desc, dp.default_schema_name,
     dp.create_date, dp.modify_date,
-    dp.authentication_type_desc
+    $_authTypeCol
 FROM sys.database_principals dp
 WHERE dp.type IN ('S','U','G','R')
 AND dp.name NOT IN ('dbo','guest','INFORMATION_SCHEMA','sys','public')
@@ -999,7 +1020,7 @@ Write-Log "Schemas:     $totalSchemas (total across all DBs)"
 Write-Log ""
 Write-Log "Archivos generados:"
 
-$allFiles = Get-ChildItem -Path $OutputDir -Recurse -File
+$allFiles = @(Get-ChildItem -Path $OutputDir -Recurse | Where-Object { -not $_.PSIsContainer })
 $totalSize = ($allFiles | Measure-Object -Property Length -Sum).Sum
 $totalFiles = $allFiles.Count
 
@@ -1007,9 +1028,9 @@ Write-Log "  Total archivos: $totalFiles"
 Write-Log "  Tamano total:   $([math]::Round($totalSize / 1MB, 2)) MB"
 Write-Log ""
 Write-Log "Estructura:"
-Get-ChildItem -Path $OutputDir -Directory | ForEach-Object {
-    $subFiles = (Get-ChildItem -Path $_.FullName -Recurse -File | Measure-Object).Count
-    $subSize = [math]::Round((Get-ChildItem -Path $_.FullName -Recurse -File |
+Get-ChildItem -Path $OutputDir | Where-Object { $_.PSIsContainer } | ForEach-Object {
+    $subFiles = (Get-ChildItem -Path $_.FullName -Recurse | Where-Object { -not $_.PSIsContainer } | Measure-Object).Count
+    $subSize = [math]::Round((Get-ChildItem -Path $_.FullName -Recurse | Where-Object { -not $_.PSIsContainer } |
         Measure-Object -Property Length -Sum).Sum / 1MB, 2)
     Write-Log "  $($_.Name)/  ($subFiles files, $subSize MB)"
 }
