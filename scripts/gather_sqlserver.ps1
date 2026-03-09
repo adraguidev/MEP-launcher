@@ -97,6 +97,12 @@ $OutputDir = [System.IO.Path]::GetFullPath($OutputDir)
 
 # Create output dir BEFORE any writes (so log file can be written)
 [System.IO.Directory]::CreateDirectory($OutputDir) | Out-Null
+
+# Force TCP protocol so ODBC Driver 11 doesn't fall back to Named Pipes
+# (Named Pipes fails on remote connections and some local configurations)
+if ($ServerInstance -notmatch '^(tcp:|np:|lpc:|via:|admin:)') {
+    $ServerInstance = "tcp:$ServerInstance"
+}
 $LogFile = Join-Path $OutputDir "gather_sqlserver.log"
 
 # ============================================================
@@ -530,7 +536,8 @@ $totalSchemas = 0
 foreach ($db in $dbList) {
 
     $dbCount++
-    $dbDir = Join-Path $OutputDir $db
+    $dbSafeName = $db -replace '[\\/:*?"<>|]', '_'
+    $dbDir = Join-Path $OutputDir $dbSafeName
     $dbMetaDir = Join-Path $dbDir "_database"
     New-Item -ItemType Directory -Path $dbMetaDir -Force | Out-Null
 

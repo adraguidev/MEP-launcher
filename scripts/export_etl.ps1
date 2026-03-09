@@ -79,6 +79,12 @@ $OutputDir = [System.IO.Path]::GetFullPath($OutputDir)
 [System.IO.Directory]::CreateDirectory($OutputDir) | Out-Null
 $LogFile = Join-Path $OutputDir "export_etl.log"
 
+# Force TCP protocol so ODBC Driver 11 doesn't fall back to Named Pipes
+# (Named Pipes fails on remote connections and some local configurations)
+if ($ServerInstance -notmatch '^(tcp:|np:|lpc:|via:|admin:)') {
+    $ServerInstance = "tcp:$ServerInstance"
+}
+
 # ============================================================
 # HELPERS
 # ============================================================
@@ -129,32 +135,33 @@ function Run-SqlToFile {
     $dir = Split-Path $OutFile -Parent
     if ($dir -and -not (Test-Path $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
 
-    # Prefer Invoke-Sqlcmd for clean CSV
-    $hasInvoke = $false
-    try { Get-Command Invoke-Sqlcmd -ErrorAction Stop | Out-Null; $hasInvoke = $true } catch {}
-
-    if ($hasInvoke) {
-        $params = @{ ServerInstance = $ServerInstance; Database = $Database;
-                     Query = $SQL; QueryTimeout = 600; MaxCharLength = 1000000 }
-        if (-not $_useWinAuth) {
-            $cmdInfo = Get-Command Invoke-Sqlcmd
-            if ($cmdInfo.Parameters.ContainsKey('Credential')) {
-                $secPass = ConvertTo-SecureString $script:_credPass -AsPlainText -Force
-                $params["Credential"] = New-Object System.Management.Automation.PSCredential($script:_credUser, $secPass)
-            } else {
-                # SQLPS module uses -Username/-Password instead of -Credential
-                $params["Username"] = $script:_credUser
-                $params["Password"] = $script:_credPass
-            }
-        }
-        $results = Invoke-Sqlcmd @params
-        if ($results) { $results | Export-Csv -Path $OutFile -NoTypeInformation -Encoding UTF8 }
-    } else {
+    # Prefer sqlcmd (uses TCP, avoids Named Pipes issues with old ODBC drivers)
+    if ($script:_hasSqlcmd) {
         $sqlcmdArgs = @("-S", $ServerInstance, "-d", $Database,
                         "-Q", $SQL, "-s", ",", "-W", "-w", "65535", "-o", $OutFile)
         if ($_useWinAuth) { $sqlcmdArgs += "-E" }
         else { $sqlcmdArgs += @("-U", $script:_credUser) }
         & sqlcmd @sqlcmdArgs 2>>$LogFile
+    } else {
+        # Fallback: Invoke-Sqlcmd
+        $hasInvoke = $false
+        try { Get-Command Invoke-Sqlcmd -ErrorAction Stop | Out-Null; $hasInvoke = $true } catch {}
+        if ($hasInvoke) {
+            $params = @{ ServerInstance = $ServerInstance; Database = $Database;
+                         Query = $SQL; QueryTimeout = 600; MaxCharLength = 1000000 }
+            if (-not $_useWinAuth) {
+                $cmdInfo = Get-Command Invoke-Sqlcmd
+                if ($cmdInfo.Parameters.ContainsKey('Credential')) {
+                    $secPass = ConvertTo-SecureString $script:_credPass -AsPlainText -Force
+                    $params["Credential"] = New-Object System.Management.Automation.PSCredential($script:_credUser, $secPass)
+                } else {
+                    $params["Username"] = $script:_credUser
+                    $params["Password"] = $script:_credPass
+                }
+            }
+            $results = Invoke-Sqlcmd @params
+            if ($results) { $results | Export-Csv -Path $OutFile -NoTypeInformation -Encoding UTF8 }
+        }
     }
 }
 
