@@ -32,21 +32,11 @@ title MEP Gatherer - Stefanini Group
 
 :: Verificar elevacion de administrador
 
-:: Anti-loop: si se relanza con argumento ELEVATED, saltar el chequeo.
+:: NO intenta auto-elevarse (causa ventanas que cierran solas en WS2008R2).
 
-:: Esto evita el loop infinito en servidores donde el servicio LanmanServer
-
-:: (requerido por "net session") esta detenido, haciendo que net session
-
-:: siempre falle aunque el proceso ya sea administrador.
+:: Si no es admin, muestra instrucciones claras y espera.
 
 :: ---------------------------------------------------------------------------
-
-if /i "%~1"=="ELEVATED" goto elevation_ok
-
-:: Usar PowerShell para chequear admin (lee el token de seguridad directamente,
-
-:: no depende de servicios como LanmanServer). Compatible con PS 2.0+.
 
 powershell -NoProfile -Command "if(-not([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)){exit 1}" >nul 2>&1
 
@@ -54,35 +44,37 @@ if %errorlevel% neq 0 (
 
     echo.
 
-    echo   [!] Se requieren permisos de Administrador.
+    echo   ============================================================
 
-    echo       Relanzando con elevacion UAC...
+    echo   ERROR: Se requieren permisos de Administrador.
 
-    powershell -Command "Start-Process cmd -ArgumentList '/c \"%~f0\" ELEVATED' -Verb RunAs" >nul 2>&1
+    echo   ============================================================
 
-    if %errorlevel% neq 0 (
+    echo.
 
-        echo.
+    echo   Cierre esta ventana y ejecute el BAT de una de estas formas:
 
-        echo   [ERROR] No se pudo elevar permisos automaticamente.
+    echo.
 
-        echo           Haga clic derecho en MEP_Gatherer.bat
+    echo   OPCION 1 - Clic derecho sobre MEP_Gatherer.bat
 
-        echo           y seleccione "Ejecutar como administrador".
+    echo             Seleccionar "Ejecutar como administrador"
 
-        echo.
+    echo.
 
-        pause
+    echo   OPCION 2 - Abrir cmd.exe como Administrador y escribir:
 
-        exit /b 1
+    echo             cd /d "%~dp0"
 
-    )
+    echo             MEP_Gatherer.bat
 
-    exit /b
+    echo.
+
+    pause
+
+    exit /b 1
 
 )
-
-:elevation_ok
 
 
 
