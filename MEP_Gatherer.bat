@@ -32,9 +32,23 @@ title MEP Gatherer - Stefanini Group
 
 :: Verificar elevacion de administrador
 
+:: Anti-loop: si se relanza con argumento ELEVATED, saltar el chequeo.
+
+:: Esto evita el loop infinito en servidores donde el servicio LanmanServer
+
+:: (requerido por "net session") esta detenido, haciendo que net session
+
+:: siempre falle aunque el proceso ya sea administrador.
+
 :: ---------------------------------------------------------------------------
 
-net session >nul 2>&1
+if /i "%~1"=="ELEVATED" goto elevation_ok
+
+:: Usar PowerShell para chequear admin (lee el token de seguridad directamente,
+
+:: no depende de servicios como LanmanServer). Compatible con PS 2.0+.
+
+powershell -NoProfile -Command "if(-not([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)){exit 1}" >nul 2>&1
 
 if %errorlevel% neq 0 (
 
@@ -44,9 +58,9 @@ if %errorlevel% neq 0 (
 
     echo       Relanzando con elevacion UAC...
 
-    powershell -Command "Start-Process cmd -ArgumentList '/c \"%~f0\"' -Verb RunAs" >nul 2>&1
+    powershell -Command "Start-Process cmd -ArgumentList '/c \"%~f0\" ELEVATED' -Verb RunAs" >nul 2>&1
 
-    if !errorlevel! neq 0 (
+    if %errorlevel% neq 0 (
 
         echo.
 
@@ -67,6 +81,8 @@ if %errorlevel% neq 0 (
     exit /b
 
 )
+
+:elevation_ok
 
 
 
